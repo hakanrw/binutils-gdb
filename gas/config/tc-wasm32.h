@@ -19,7 +19,7 @@
    02110-1301, USA.  */
 
 #define TC_WASM32
-#define TARGET_FORMAT                       "elf32-wasm32"
+#define TARGET_FORMAT                               "wasm"
 #define TARGET_ARCH                        bfd_arch_wasm32
 #define TARGET_MACH                                      1
 
@@ -87,3 +87,6 @@ extern bool wasm32_fix_adjustable (struct fix *);
 #define BLOCK_TYPE_I64               0x7e
 #define BLOCK_TYPE_F32               0x7d
 #define BLOCK_TYPE_F64               0x7c
+
+extern void wasm32_md_finish (void);
+#define md_finish() wasm32_md_finish ();

@@ -267,6 +267,9 @@ enum _relax_state
 
   /* CodeView compressed integer.  */
   rs_cv_comp,
+
+  /* Object specific relaxable (or similarly alterable) instruction. */
+  rs_obj_dependent,
 };
 
 typedef enum _relax_state relax_stateT;

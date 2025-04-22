@@ -423,7 +423,7 @@ case ${generic_target} in
 
   visium-*-elf)				fmt=elf ;;
 
-  wasm32-*-*)                           fmt=elf ;;
+  wasm32-*-*)                           fmt=wasm bfd_gas=yes ;;
 
   xstormy16-*-*)			fmt=elf ;;
   

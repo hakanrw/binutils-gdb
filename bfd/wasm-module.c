@@ -56,6 +56,7 @@ static const char * const wasm_numbered_sections[] =
   WASM_SECTION ( 9, "element"),
   WASM_SECTION (10, "code"),
   WASM_SECTION (11, "data"),
+  WASM_SECTION (12, "datacount"),
 };
 
 #define WASM_NUMBERED_SECTIONS ARRAY_SIZE (wasm_numbered_sections)
@@ -388,9 +389,11 @@ static bool
 wasm_scan (bfd *abfd)
 {
   bool error = false;
+
   /* Fake VMAs for now. Choose 0x80000000 as base to avoid clashes
      with actual data addresses.  */
-  bfd_vma vma = 0x80000000;
+  //bfd_vma vma = 0x80000000;
+
   int section_code;
   unsigned int bytes_read;
   asection *bfdsec;
@@ -452,14 +455,15 @@ wasm_scan (bfd *abfd)
 
 	  bfdsec = bfd_make_section_anyway_with_flags (abfd, name,
 						       SEC_HAS_CONTENTS);
+
 	  if (bfdsec == NULL)
 	    goto error_return;
 
 	  bfdsec->size = payload_len;
 	}
 
-      bfdsec->vma = vma;
-      bfdsec->lma = vma;
+      //bfdsec->vma = vma;
+      //bfdsec->lma = vma;
       bfdsec->alignment_power = 0;
       bfdsec->filepos = bfd_tell (abfd);
       if (bfdsec->size != 0)
@@ -471,7 +475,7 @@ wasm_scan (bfd *abfd)
 	  bfdsec->alloced = 1;
 	}
 
-      vma += bfdsec->size;
+      //vma += bfdsec->size;
     }
 
   /* Make sure we're at actual EOF.  There's no indication in the
@@ -517,6 +521,7 @@ struct compute_section_arg
    are assumed already to contain a section header; those are appended
    to the WebAssembly module verbatim.  */
 
+ATTRIBUTE_UNUSED
 static void
 wasm_compute_custom_section_file_position (bfd *abfd,
 					   sec_ptr asect,
@@ -559,7 +564,8 @@ wasm_compute_custom_section_file_position (bfd *abfd,
     }
   else
     {
-      asect->filepos = fs->pos;
+      printf("non wasm sec %s \n", asect->name);
+      //asect->filepos = fs->pos;
     }
 
 

@@ -1,0 +1,539 @@
+/* WASM object file format
+   Copyright (C) 1989-2025 Free Software Foundation, Inc.
+
+   This file is part of GAS, the GNU Assembler.
+
+   GAS is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as
+   published by the Free Software Foundation; either version 3,
+   or (at your option) any later version.
+
+   GAS is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
+   the GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with GAS; see the file COPYING.  If not, write to the Free
+   Software Foundation, 51 Franklin Street - Fifth Floor, Boston, MA
+   02110-1301, USA.  */
+
+#define OBJ_HEADER "obj-wasm.h"
+
+#include "as.h"
+#undef NO_RELOC
+
+#include "subsegs.h"
+
+static inline unsigned int
+sizeof_uleb128 (valueT value)
+{
+  int size = 0;
+
+  do
+    {
+      value >>= 7;
+      size += 1;
+    }
+  while (value != 0);
+
+  return size;
+}
+
+static void
+wasm_put_uleb128 (unsigned long value, unsigned char* addr)
+{
+  unsigned char c;
+
+  do
+    {
+      c = value & 0x7f;
+      value >>= 7;
+      if (value)
+        c |= 0x80;
+      *addr = c;
+      addr++;
+    }
+  while (value);
+}
+
+/* obj-wasm structures */
+
+typedef struct {
+  fragS *frag;
+  addressT offset;
+} frag_pos;
+
+typedef enum {
+  ENTRY_EL_COUNT,
+  ENTRY_SYMBOL_SIZE
+} wasm_entry_type;
+
+typedef enum {
+  SIZE_PENDING,    // Waiting for .end or .size X
+  SIZE_KNOWN,      // Direct .size value known
+  SIZE_CALC,       // Calculate size (.end known)
+} wasm_entry_status;
+
+typedef struct wasm_patch_entry {
+  wasm_entry_type type;
+  wasm_entry_status status;
+  segT section;           // Which section this applies to
+  fragS *frag;            // Pointer to the frag
+  union {
+    valueT known_size;   // If size is known immediately
+    frag_pos end;         // If size will be calculated from frag bound
+  } size_info;
+  valueT patch_value;  // End value
+  struct wasm_patch_entry *next;
+} wasm_patch_entry;
+
+
+/* Maintain a list of the entries of the structures.  */
+
+ATTRIBUTE_UNUSED
+static htab_t entry_hash;
+
+static wasm_patch_entry *wasm_patch_list_head = NULL;
+static wasm_patch_entry *wasm_patch_list_tail = NULL;
+
+static bool wasm_all_entries_calculated = false;
+
+static
+wasm_patch_entry*
+wasm_register_entry(segT section, fragS *frag, wasm_entry_type type)
+{
+  wasm_patch_entry *entry;
+
+  entry = (wasm_patch_entry *) xmalloc(sizeof(wasm_patch_entry));
+
+  entry->section = section;
+  entry->frag = frag;
+  // entry->offset = frag->fr_fix;  // typically insert point
+  entry->status = SIZE_PENDING;
+  entry->type = type;
+  entry->size_info.known_size = 0;
+  entry->next = NULL;
+
+  if (!wasm_patch_list_head)
+    wasm_patch_list_head = wasm_patch_list_tail = entry;
+  else {
+    wasm_patch_list_tail->next = entry;
+    wasm_patch_list_tail = entry;
+  }
+
+  return entry;
+}
+
+ATTRIBUTE_UNUSED
+static void
+wasm_finalize_entry_size_direct(wasm_patch_entry *entry, offsetT size)
+{
+  entry->status = SIZE_KNOWN;
+  entry->size_info.known_size = size;
+}
+
+static void
+wasm_finalize_value_direct(wasm_patch_entry *entry, valueT value)
+{
+  entry->status = SIZE_KNOWN;
+  entry->size_info.known_size = sizeof_uleb128 (value);
+  entry->patch_value = value;
+}
+
+static void
+wasm_finalize_value_fragpoint(wasm_patch_entry *entry, fragS *frag, addressT offset)
+{
+  entry->status = SIZE_CALC;
+  entry->size_info.end.frag = frag;
+  entry->size_info.end.offset = offset;
+}
+
+static valueT
+wasm_section_get_symbol_amount(segT section)
+{
+  valueT retval;
+  retval = 0;
+
+  for (wasm_patch_entry* entry = wasm_patch_list_head; entry != NULL; entry = entry->next)
+  {
+    if (entry->section == section && entry->type == ENTRY_SYMBOL_SIZE) retval++;
+  }
+
+  printf ("wasm_section_get_symbol_amount: %ld\n", retval);
+
+  return retval;
+}
+
+static void
+wasm_calculate_all_entries(void)
+{
+  for (wasm_patch_entry* entry = wasm_patch_list_head; entry != NULL; entry = entry->next)
+  {
+    if (entry->type == ENTRY_EL_COUNT)
+    {
+      valueT val = wasm_section_get_symbol_amount (entry->section);
+      wasm_finalize_value_direct (entry, val);
+    }
+    else if (entry->type == ENTRY_SYMBOL_SIZE)
+    {
+      if (entry->status == SIZE_PENDING)
+      {
+        /* Size should have been known by now */
+        as_bad ("size not known\n");
+        abort ();
+      }
+      else if (entry->status == SIZE_CALC)
+      {
+        fragS *fcurr;
+        valueT size;
+        fcurr = entry->frag->fr_next;
+        size = 0;
+
+        for (; fcurr != entry->size_info.end.frag; fcurr = fcurr->fr_next)
+        {
+          if ((fcurr->fr_type != rs_fill) || (fcurr->fr_var != 0))
+          {
+            as_bad ("came accross non-relaxed frag. can't calculate size\n");
+            abort ();
+          }
+          size += fcurr->fr_fix;
+        }
+        size += entry->size_info.end.offset;
+        wasm_finalize_value_direct (entry, size);
+        printf ("calculated size: %ld\n", size);
+      }
+      else if (entry->status == SIZE_KNOWN)
+      {
+        /* Nothing to do here */
+      }
+      else
+      {
+        as_bad ("unknown entry status\n");
+        abort ();
+      }
+    }
+    else
+    {
+      as_bad ("unknown entry type\n");
+      abort ();
+    }
+  }
+
+  wasm_all_entries_calculated = true;
+}
+
+void
+obj_wasm_endfunc (int ignore ATTRIBUTE_UNUSED)
+{
+  wasm_patch_entry *entry = wasm_patch_list_tail;
+
+  if (entry == NULL || entry->type == ENTRY_EL_COUNT)
+  {
+    as_bad ("no function declared\n");
+    abort ();
+  }
+
+  if (entry->status != SIZE_PENDING)
+  {
+    as_bad ("a size directive was already applied\n");
+    abort ();
+  }
+
+  wasm_finalize_value_fragpoint(entry, frag_now, frag_now_fix ());
+}
+
+void
+obj_wasm_frob_symbol (symbolS *sym ATTRIBUTE_UNUSED, int *punt ATTRIBUTE_UNUSED)
+{
+  printf("frob symbol %s\n", S_GET_NAME(sym));
+    /* When we have fixups against constant expressions, we get a GAS-specific
+       section symbol at no extra charge for obscure reasons in
+       adjust_reloc_syms.  Since ELF outputs section symbols, it gladly
+       outputs this "*ABS*" symbol in every object.  Avoid that.
+       Also, don't emit undefined symbols (that aren't used in relocations).
+       They pop up when tentatively parsing register names as symbols.  */
+  if ((sym) == section_symbol (absolute_section))
+  {
+    *punt = 1;
+    printf("punt\n");
+  }
+}
+
+void
+obj_wasm_frob_file (void)
+{
+  printf("frob file\n");
+}
+
+void
+obj_wasm_frob_section (segT sec)
+{
+  printf("frob section %s\n", bfd_section_name (sec));
+}
+
+/* Relocation processing may require knowing the VMAs of the sections.
+   Writing to a section will cause the BFD back end to compute the
+   VMAs.  This function also ensures that file size is large enough
+   to cover a_text and a_data should text or data be the last section
+   in the file.  */
+
+void
+obj_wasm_frob_file_before_fix (void)
+{
+
+}
+
+/* Handle .type.  On {Net,Open}BSD, this is used to set the n_other field,
+   which is then apparently used when doing dynamic linking.  Older
+   versions of gas ignored the .type pseudo-op, so we also ignore it if
+   we can't parse it.  */
+
+//static void
+//obj_wasm_type (int ignore ATTRIBUTE_UNUSED)
+//{
+//}
+
+static const pseudo_typeS wasm_pseudo_table[];
+
+void
+wasm_pop_insert (void)
+{
+  pop_insert (wasm_pseudo_table);
+}
+
+
+void
+wasm_obj_read_begin_hook (void)
+{
+}
+
+void
+wasm_obj_symbol_new_hook (symbolS *symbolP)
+{
+  printf("sec: %s\tsymbol: %s\tval:%ld\n", bfd_section_name (now_seg), S_GET_NAME(symbolP), S_GET_VALUE(symbolP));
+
+  if (strcmp (S_GET_NAME(symbolP), "*ABS*") == 0) return;
+
+  //fragS *cur_frag = frag_now;
+  wasm_register_entry (now_seg, frag_now, ENTRY_SYMBOL_SIZE);
+  frag_var (rs_obj_dependent, 10, 10, (relax_substateT)0, NULL, 0, NULL);
+
+  //fix_new (frag_now, frag_now_fix (), 2, NULL, 0, 1, BFD_RELOC_SH_LABEL);
+}
+
+void
+obj_wasm_section (int ignore ATTRIBUTE_UNUSED)
+{
+  /* Strip out the section name.  */
+  char *section_name;
+  char c;
+  int alignment = -1;
+  char *name;
+  unsigned int exp;
+  flagword flags, oldflags;
+  asection *sec;
+  bool is_bss = false;
+
+  /*
+  if (flag_mri)
+    {
+      char type;
+
+      s_mri_sect (&type);
+      return;
+    }
+  */
+
+  c = get_symbol_name (&section_name);
+  name = notes_memdup0 (section_name, input_line_pointer - section_name);
+  restore_line_pointer (c);
+  SKIP_WHITESPACE ();
+
+  exp = 0;
+  flags = SEC_NO_FLAGS;
+
+  sec = subseg_new (name, (subsegT) exp);
+
+  if (is_bss)
+    seg_info (sec)->bss = 1;
+
+  if (alignment >= 0)
+    sec->alignment_power = alignment;
+
+  oldflags = bfd_section_flags (sec);
+  if (oldflags == SEC_NO_FLAGS)
+    {
+      /* Set section flags for a new section just created by subseg_new.
+         Provide a default if no flags were parsed.  */
+      if (flags == SEC_NO_FLAGS)
+	flags = SEC_HAS_CONTENTS | SEC_IN_MEMORY; // FIXME: is SEC_IN_MEMORY necessary?
+
+      if (!bfd_set_section_flags (sec, flags))
+	as_warn (_("error setting flags for \"%s\": %s"),
+		 bfd_section_name (sec),
+		 bfd_errmsg (bfd_get_error ()));
+    }
+  else if (flags != SEC_NO_FLAGS)
+    {
+      /* This section's attributes have already been set.  Warn if the
+         attributes don't match.  */
+    }
+
+  demand_empty_rest_of_line ();
+
+  printf("section define %s\n", name);
+
+  wasm_register_entry (now_seg, frag_now, ENTRY_EL_COUNT);
+  frag_var (rs_obj_dependent, 10, 10, (relax_substateT)0, NULL, 0, NULL);
+}
+
+int
+wasm_obj_estimate_size_before_relax (fragS * fragp ATTRIBUTE_UNUSED,
+                                     asection * seg ATTRIBUTE_UNUSED)
+{
+  printf ("wasm_obj_estimate_size\n");
+
+  if (! wasm_all_entries_calculated)
+  {
+    wasm_calculate_all_entries ();
+  }
+
+  for (wasm_patch_entry* entry = wasm_patch_list_head; entry != NULL; entry = entry->next)
+  {
+    if (entry->frag == fragp)
+    {
+      if (entry->status == SIZE_KNOWN)
+      { 
+        printf ("estimate_size: %ld\n", entry->size_info.known_size);
+        return entry->size_info.known_size;
+      }
+      else
+      {
+        as_bad ("frag size is not known at last stage");
+        abort ();
+      }
+    }
+  }
+
+  as_bad ("frag was not in registry\n");
+  abort ();
+  return 0;
+}
+
+void
+wasm_obj_convert_frag (bfd * abfd ATTRIBUTE_UNUSED,
+                       asection * sec ATTRIBUTE_UNUSED,
+                       fragS * fragP ATTRIBUTE_UNUSED)
+{
+  printf ("wasm_convert_frag\n");
+
+  for (wasm_patch_entry* entry = wasm_patch_list_head; entry != NULL; entry = entry->next)
+  {
+    if (entry->frag == fragP)
+    {
+      printf ("patchval %ld\n", entry->patch_value);
+
+      unsigned char * buffer =
+        (unsigned char *) (fragP->fr_fix + &fragP->fr_literal[0]);
+
+      entry->frag->fr_fix += entry->size_info.known_size;
+      wasm_put_uleb128 (entry->patch_value, buffer);
+    }
+  }
+
+}
+
+void
+wasm_begin (void)
+{
+  printf("wasm_obj_begin\n");
+}
+
+void
+wasm_end (void)
+{
+  printf("wasm_obj_end\n");
+}
+
+#ifdef USE_EMULATIONS /* Support for an AOUT emulation.  */
+
+/* When changed, make sure these table entries match the single-format
+   definitions in obj-wasm.h.  */
+
+const struct format_ops wasm_format_ops =
+{
+  bfd_target_unkown_flavour,
+  1,	/* dfl_leading_underscore.  */
+  0,	/* emit_section_symbols.  */
+  wasm_begin,	/* begin.  */
+  wasm_end,	/* end.  */
+  0,	/* app_file.  */
+  NULL, /* assign_symbol */
+  obj_wasm_frob_symbol,
+  obj_wasm_frob_file,	/* frob_file.  */
+  0,	/* frob_file_before_adjust.  */
+  obj_wasm_frob_file_before_fix,
+  0,	/* frob_file_after_relocs.  */
+  0,	/* s_get_size.  */
+  0,	/* s_set_size.  */
+  0,	/* s_get_align.  */
+  0,	/* s_set_align.  */
+  0, //obj_wasm_s_get_other,
+  0, //obj_wasm_s_set_other,
+  0, //obj_wasm_s_get_desc,
+  0, //obj_wasm_s_set_desc,
+  0, //obj_wasm_s_get_type,
+  0, //obj_wasm_s_set_type,
+  0,	/* copy_symbol_attributes.  */
+  0, //obj_wasm_process_stab,
+  0, //obj_wasm_separate_stab_sections,
+  0,	/* init_stab_section.  */
+  0, //obj_wasm_sec_sym_ok_for_reloc,
+  wasm_pop_insert,
+  0,	/* ecoff_set_ext.  */
+  wasm_obj_read_begin_hook,	/* read_begin_hook.  */
+  wasm_obj_symbol_new_hook,	/* symbol_new_hook.  */
+  0,	/* symbol_clone_hook.  */
+  0	/* adjust_symtab.  */
+};
+
+#endif /* USE_EMULATIONS */
+
+static const pseudo_typeS wasm_pseudo_table[] =
+{
+  {"sect", obj_wasm_section, 0},
+  {"sect.s", obj_wasm_section, 0},
+  {"section", obj_wasm_section, 0},
+  {"section.s", obj_wasm_section, 0},
+  {"end", obj_wasm_endfunc, 0},
+  {NULL, NULL, 0}
+};
+
+
+// NOTES:
+// from tc-cris.h:
+// we also have this
+/* When we have fixups against constant expressions, we get a GAS-specific
+   section symbol at no extra charge for obscure reasons in
+   adjust_reloc_syms.  Since ELF outputs section symbols, it gladly
+   outputs this "*ABS*" symbol in every object.  Avoid that.
+   Also, don't emit undefined symbols (that aren't used in relocations).
+   They pop up when tentatively parsing register names as symbols.  */
+
+// to obtain positions on fixp
+//            as_warn_where (l->fixp->fx_file, l->fixp->fx_line,
+
+// from as.h
+  /* A DWARF leb128 value; only ELF uses this.  The subtype is 0 for
+     unsigned, 1 for signed.  */
+//  rs_leb128,
+
+
+/*
+ * Forever thankful to the GNU Project and all those who came before,
+ * whose decades of work built the foundations we now walk upon.
+ * This backend stands on their shoulders, in reverence and resolve.
+ *
+ *     -- For freedom, for knowledge, for the cause, for the people.
+ */

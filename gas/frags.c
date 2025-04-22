@@ -159,6 +159,8 @@ frag_new (size_t old_frags_var_max_size
 	  /* Number of chars (already allocated on obstack frags) in
 	     variable_length part of frag.  */)
 {
+  printf("new frag\n");
+
   fragS *former_last_fragP;
   frchainS *frchP;
 
@@ -288,6 +290,7 @@ frag_variant (relax_stateT type, size_t max_chars, size_t var,
 void
 frag_wane (fragS *fragP)
 {
+  printf ("frag wane\n");
   fragP->fr_type = rs_fill;
   fragP->fr_offset = 0;
   fragP->fr_var = 0;

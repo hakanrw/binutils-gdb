@@ -107,6 +107,8 @@ int
 md_estimate_size_before_relax (fragS * fragp ATTRIBUTE_UNUSED,
 			       asection * seg ATTRIBUTE_UNUSED)
 {
+  printf ("md_estimate_size_before_relax\n");
+  return 3;
   abort ();
   return 0;
 }
@@ -148,6 +150,11 @@ md_convert_frag (bfd * abfd ATTRIBUTE_UNUSED,
 		 asection * sec ATTRIBUTE_UNUSED,
 		 fragS * fragP ATTRIBUTE_UNUSED)
 {
+  printf ("md_convert_frag\n");
+
+  fragP->fr_fix += 3;
+  fragP->fr_type = rs_fill;
+  return;
   abort ();
 }
 
@@ -167,7 +174,7 @@ md_begin (void)
     str_hash_insert (wasm32_hash, opcode->name, opcode, 0);
 
   linkrelax = 0;
-  flag_sectname_subst = 1;
+  // TODO: flag_sectname_subst = 1;
   flag_no_comments = 0;
   flag_keep_locals = 1;
 }
@@ -203,6 +210,8 @@ apply_full_field_fix (fixS * fixP, char *buf, bfd_vma val, int size)
 void
 md_apply_fix (fixS * fixP, valueT * valP, segT seg ATTRIBUTE_UNUSED)
 {
+  printf ("md_apply_fix\n");
+
   char *buf = fixP->fx_where + fixP->fx_frag->fr_literal;
   long val = (long) *valP;
 
@@ -737,6 +746,8 @@ wasm32_operands (struct wasm32_opcode_s *opcode, char **line)
 void
 md_assemble (char *str)
 {
+  printf("md_assemble\n");
+
   char op[32];
   char *t;
   struct wasm32_opcode_s *opcode;
@@ -797,6 +808,8 @@ tc_gen_reloc (asection * sec ATTRIBUTE_UNUSED, fixS * fixp)
 {
   arelent *reloc;
 
+  printf("tc_gen_reloc\n");
+
   reloc = notes_alloc (sizeof (arelent));
   reloc->sym_ptr_ptr = notes_alloc (sizeof (asymbol *));
   *reloc->sym_ptr_ptr = symbol_get_bfdsym (fixp->fx_addsy);
@@ -818,4 +831,10 @@ tc_gen_reloc (asection * sec ATTRIBUTE_UNUSED, fixS * fixp)
   reloc->addend = fixp->fx_offset;
 
   return reloc;
+}
+
+void
+wasm32_md_finish ()
+{
+  printf ("wasm32_md_finish\n");
 }

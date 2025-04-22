@@ -489,6 +489,24 @@ cvt_frag_to_fill (segT sec ATTRIBUTE_UNUSED, fragS *fragP)
       frag_wane (fragP);
       break;
 
+    case rs_obj_dependent:
+#ifdef obj_convert_frag
+      obj_convert_frag (stdoutput, sec, fragP);
+#else
+      as_bad ("came accross object dependent frag, but no handler was set.");
+      abort ();
+#endif
+
+      gas_assert (fragP->fr_next == NULL
+		  || (fragP->fr_next->fr_address - fragP->fr_address
+		      == fragP->fr_fix));
+
+      /* After md_convert_frag, we make the frag into a ".space 0".
+	 obj_convert_frag() should set up any fixSs and constants
+	 required.  */
+      frag_wane (fragP);
+      break;
+
 #ifndef WORKING_DOT_WORD
     case rs_broken_word:
       {
@@ -2773,6 +2791,15 @@ relax_segment (struct frag *segment_frag_root, segT segment, int pass)
 	  address += md_estimate_size_before_relax (fragP, segment);
 	  break;
 
+        case rs_obj_dependent:
+#ifdef obj_estimate_size_before_relax
+	  address += obj_estimate_size_before_relax (fragP, segment);
+#else
+          as_bad ("came accross object dependent frag, but no handler was set.");
+          abort ();
+#endif
+          break;
+
 #ifndef WORKING_DOT_WORD
 	  /* Broken words don't concern us yet.  */
 	case rs_broken_word:
@@ -3121,6 +3148,11 @@ relax_segment (struct frag *segment_frag_root, segT segment, int pass)
 #endif /* TC_GENERIC_RELAX_TABLE  */
 #endif
 		break;
+
+              case rs_obj_dependent:
+                /* FIXME: i don't know what to do here */
+
+                break;
 
 	      case rs_leb128:
 		{
