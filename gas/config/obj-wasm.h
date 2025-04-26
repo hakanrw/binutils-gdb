@@ -30,7 +30,6 @@ extern void obj_wasm_frob_file (void);
 extern void obj_wasm_frob_file_before_fix (void);
 extern void obj_wasm_frob_section (segT);
 extern void obj_wasm_section (int);
-extern void obj_wasm_endfunc (int);
 void wasm_fixup_section (bfd*, segT, void*);
 
 #define obj_frob_file()              obj_wasm_frob_file ()
@@ -63,15 +62,6 @@ void wasm_obj_symbol_new_hook (symbolS *);
 #define obj_symbol_new_hook     wasm_obj_symbol_new_hook
 #endif
 
-int wasm_obj_estimate_size_before_relax (fragS *, asection *);
-#ifndef obj_estimate_size_before_relax
-#define obj_estimate_size_before_relax wasm_obj_estimate_size_before_relax
-#endif
-
-void wasm_obj_convert_frag (bfd *, asection *, fragS *);
-#ifndef obj_convert_frag
-#define obj_convert_frag wasm_obj_convert_frag
-#endif
 /* Symbol table entry data type.  */
 
 typedef struct nlist obj_symbol_type;	/* Symbol table entry.  */

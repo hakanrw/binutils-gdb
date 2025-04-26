@@ -61,6 +61,78 @@ static const char * const wasm_numbered_sections[] =
 
 #define WASM_NUMBERED_SECTIONS ARRAY_SIZE (wasm_numbered_sections)
 
+typedef struct wasm_subsec_list
+{
+  asection * subsec;
+  struct wasm_subsec_list *  next;
+} wasm_subsec_list;
+
+typedef struct wasm_section_information
+{
+  asection *     section;
+  struct wasm_subsec_list *  subsec_list_head;
+  struct wasm_subsec_list *  subsec_list_tail;
+  bfd_size_type subsec_count;
+  struct wasm_section_information *  next;
+} wasm_section_information;
+
+static wasm_section_information * section_information_head = NULL;
+
+static void
+wasm_subsection_register (asection * subsec, asection * sec)
+{
+  wasm_subsec_list * subsecinfo;
+  wasm_section_information * secinfo;
+  wasm_section_information * seclast;
+  subsecinfo = xmalloc (sizeof (wasm_subsec_list));
+  subsecinfo->subsec = subsec;
+  subsecinfo->next = NULL;
+  secinfo = NULL;
+  seclast = NULL;
+
+  printf ("register subsection %s in section %s\n", subsec->name, sec->name);
+
+  for (wasm_section_information * securr = section_information_head; securr; securr = securr->next)
+    {
+      if (securr->section == sec)
+        {
+          secinfo = securr;
+          break;
+        }
+      seclast = securr;
+    }
+
+  if (! secinfo)
+    {
+      secinfo = xmalloc (sizeof (wasm_section_information));
+      secinfo->section = sec;
+      secinfo->subsec_list_head = NULL;
+      secinfo->subsec_list_tail = NULL;
+      secinfo->subsec_count = 0;
+
+      if (! section_information_head)
+        {
+          section_information_head = secinfo;
+        }
+      else
+        {
+          seclast->next = secinfo;
+        }
+    }
+
+  if (! secinfo->subsec_list_tail)
+    {
+      secinfo->subsec_list_head = secinfo->subsec_list_tail = subsecinfo;
+    }
+  else
+    {
+      secinfo->subsec_list_tail->next = subsecinfo;
+      secinfo->subsec_list_tail = subsecinfo;
+    }
+
+  secinfo->subsec_count++;
+}
+
 /* Resolve SECTION_CODE to a section name if there is one, NULL
    otherwise.  */
 
@@ -188,6 +260,23 @@ wasm_write_uleb128 (bfd *abfd, bfd_vma v)
       (x) = _bfd_safe_read_leb128 (abfd, &(p), false, (end));		\
     }									\
   while (0)
+
+/* Get variable uleb size from value */
+
+static inline unsigned int
+sizeof_uleb128 (unsigned long long value)
+{
+  int size = 0;
+
+  do
+    {
+      value >>= 7;
+      size += 1;
+    }
+  while (value != 0);
+
+  return size;
+}
 
 /* Verify the magic number at the beginning of a WebAssembly module
    ABFD, setting ERRORPTR if there's a mismatch.  */
@@ -489,21 +578,62 @@ wasm_scan (bfd *abfd)
   return false;
 }
 
+/* Check if given section is a subsection. If so, return main
+   section name, otherwise return NULL */
+// FIXME: alloc memory leak
+static char *
+wasm_check_subsection (asection *asect)
+{
+  char * mname;
+  const char * c;
+  unsigned int dotcount;
+  mname = NULL;
+  c = asect->name;
+  dotcount = 0;
+
+  if (strncmp (c, ".wasm", 5) == 0)
+    c += 5; // skip wasm
+
+  for (; *c; c++)
+    {
+      if (*c == '.')
+        dotcount++;
+
+      if (dotcount == 2)
+        {
+          unsigned int len;
+          len = c - asect->name;
+          mname = xmalloc (len + 1);
+          memcpy (mname, asect->name, len);
+          mname[len] = '\0'; /* null termination */
+          break;
+        }
+    }
+
+  return mname;
+}
+
 /* Put a numbered section ASECT of ABFD into the table of numbered
    sections pointed to by FSARG.  */
 
 static void
-wasm_register_section (bfd *abfd ATTRIBUTE_UNUSED,
+wasm_register_section (bfd *abfd,
 		       asection *asect,
 		       void *fsarg)
 {
   sec_ptr *numbered_sections = fsarg;
   int idx = wasm_section_name_to_code (asect->name);
 
-  if (idx == 0)
-    return;
+  if (idx != 0)
+    numbered_sections[idx] = asect;
 
-  numbered_sections[idx] = asect;
+  const char * mname;
+  mname = wasm_check_subsection (asect);
+  if (mname)
+    {
+      /* This is a subsection */
+      wasm_subsection_register (asect, bfd_make_section_old_way (abfd, mname));
+    }
 }
 
 struct compute_section_arg
@@ -538,6 +668,16 @@ wasm_compute_custom_section_file_position (bfd *abfd,
   if (idx != 0)
     return;
 
+  char * mname = wasm_check_subsection (asect);
+  if (mname)
+    {
+      /* This is a subsection. Skip it and handle it in main section */
+      free (mname);
+      return;
+    }
+
+  printf ("custom sec %s\n", asect->name);
+
   if (startswith (asect->name, WASM_SECTION_PREFIX))
     {
       const char *name = asect->name + strlen (WASM_SECTION_PREFIX);
@@ -565,7 +705,7 @@ wasm_compute_custom_section_file_position (bfd *abfd,
   else
     {
       printf("non wasm sec %s \n", asect->name);
-      //asect->filepos = fs->pos;
+      asect->filepos = fs->pos;
     }
 
 
@@ -606,19 +746,66 @@ wasm_compute_section_file_positions (bfd *abfd)
   fs.pos = bfd_tell (abfd);
   for (i = 0; i < WASM_NUMBERED_SECTIONS; i++)
     {
+      wasm_section_information * section_information = NULL;
       sec_ptr sec = numbered_sections[i];
       bfd_size_type size;
 
       if (! sec)
 	continue;
+
+      for (wasm_section_information * securr = section_information_head; securr; securr = securr->next)
+        {
+          if (securr->section == sec)
+            {
+              section_information = securr;
+              break;
+            }
+        }
+
       size = sec->size;
+
+      if (section_information) /* This section has subsections */
+        {
+          size += sizeof_uleb128 (section_information->subsec_count);
+
+          for (wasm_subsec_list * subcurr = section_information->subsec_list_head; subcurr; subcurr = subcurr->next)
+           {
+             size += sizeof_uleb128 (subcurr->subsec->size);
+             size += subcurr->subsec->size;
+           }
+        }
+
       if (bfd_seek (abfd, fs.pos, SEEK_SET) != 0)
 	return false;
       if (! wasm_write_uleb128 (abfd, i)
 	  || ! wasm_write_uleb128 (abfd, size))
 	return false;
-      fs.pos = sec->filepos = bfd_tell (abfd);
-      fs.pos += size;
+
+      fs.pos = bfd_tell (abfd);
+
+      if (section_information) /* This section has subsections */
+        {
+          if (! wasm_write_uleb128 (abfd, section_information->subsec_count))
+            return false;
+
+          fs.pos = bfd_tell (abfd);
+
+          for (wasm_subsec_list * subcurr = section_information->subsec_list_head; subcurr; subcurr = subcurr->next)
+           {
+             if (bfd_seek (abfd, fs.pos, SEEK_SET) != 0)
+               return false;
+
+             sec_ptr subsec = subcurr->subsec;
+             if (! wasm_write_uleb128 (abfd, subsec->size))
+               return false;
+
+             fs.pos = subsec->filepos = bfd_tell (abfd);
+             fs.pos += subsec->size;
+           }
+        }
+
+      sec->filepos = fs.pos;
+      fs.pos += sec->size;
     }
 
   fs.failed = false;
