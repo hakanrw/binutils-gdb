@@ -1658,7 +1658,8 @@ write_contents (bfd *abfd ATTRIBUTE_UNUSED,
 
   /* Write out the frags.  */
   if (seginfo == NULL
-      || !(bfd_section_flags (sec) & SEC_HAS_CONTENTS))
+      || !(bfd_section_flags (sec) & SEC_HAS_CONTENTS)
+      || !seginfo->frchainP) /* FIXME: Hakan - is this correct? */
     return;
 
   for (f = seginfo->frchainP->frch_root;
