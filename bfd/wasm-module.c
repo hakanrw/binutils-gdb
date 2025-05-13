@@ -566,24 +566,15 @@ wasm_section_set_child (asection *parent, asection *child)
   parent_sdata->subsec_count++;
 }
 
-/* A hook to set up object file dependent section information.  */
+/* Link subsections and sections during flatten. */
 
-static bool
-wasm_new_section_hook (bfd *abfd, asection *newsect)
+static void
+wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
 {
-  printf ("wasm_new_section_hook %s\n", newsect->name);
-
-  size_t amt = sizeof (struct wasm_section_tdata);
-
-  wasm_section_tdata *wasm_section = bfd_zalloc (abfd, amt);
-  newsect->used_by_bfd = wasm_section;
-  wasm_section->section = newsect;
-
-  if (!newsect->used_by_bfd)
-    return false;
+  wasm_section_tdata *wasm_section = wasm_section_data(asect);
 
   char * mname;
-  mname = wasm_check_subsection (newsect);
+  mname = wasm_check_subsection (asect);
   if (mname)
     {
       /* This is a subsection. */
@@ -602,11 +593,11 @@ wasm_new_section_hook (bfd *abfd, asection *newsect)
             {
               free (mname);
               free (pname);
-              return false;
+              assert (false);
             }
         }
 
-      wasm_section_set_child (parent, newsect);
+      wasm_section_set_child (parent, asect);
 
       free (mname);
     }
@@ -616,6 +607,55 @@ wasm_new_section_hook (bfd *abfd, asection *newsect)
       wasm_section->section->size = 4; /* uleb padding. */
     }
 
+}
+
+/* Compute segments parent-children offset and size information */
+
+static void
+wasm_flatten_compute_offsets (bfd *abfd ATTRIBUTE_UNUSED,
+                              asection *asect,
+                              void *fsarg ATTRIBUTE_UNUSED)
+{
+
+  wasm_section_tdata *sdata = wasm_section_data (asect);
+
+  if (! sdata)
+  {
+    printf ("sdata missing for %s\n", asect->name);
+    return;
+  }
+
+  if (! sdata->parent)
+    return; /* Main section, skip */
+
+  sdata->offset = sdata->parent->section->size;
+  sdata->parent->section->size += asect->size;
+
+  printf ("offset of %s within %s: %d\n", asect->name, sdata->parent->section->name, sdata->offset);
+}
+
+void
+wasm_flatten_subsections (bfd *abfd)
+{
+  bfd_map_over_sections (abfd, wasm_flatten_link, NULL);
+  bfd_map_over_sections (abfd, wasm_flatten_compute_offsets, NULL);
+}
+
+/* A hook to set up object file dependent section information.  */
+
+static bool
+wasm_new_section_hook (bfd *abfd, asection *newsect)
+{
+  printf ("wasm_new_section_hook %s\n", newsect->name);
+
+  size_t amt = sizeof (struct wasm_section_tdata);
+
+  wasm_section_tdata *wasm_section = bfd_zalloc (abfd, amt);
+  newsect->used_by_bfd = wasm_section;
+  wasm_section->section = newsect;
+
+  if (!newsect->used_by_bfd)
+    return false;
 
   /* We allow more than three sections internally.  */
   return _bfd_generic_new_section_hook (abfd, newsect);
@@ -641,32 +681,6 @@ struct compute_section_arg
   bfd_vma pos;
   bool failed;
 };
-
-/* Compute segments parent-children offset and size information */
-
-static void
-wasm_compute_segment_information (bfd *abfd ATTRIBUTE_UNUSED,
-                                  asection *asect,
-                                  void *fsarg ATTRIBUTE_UNUSED)
-{
-
-  wasm_section_tdata *sdata = wasm_section_data (asect);
-
-  if (! sdata)
-  {
-    printf ("sdata missing for %s\n", asect->name);
-    return;
-  }
-
-  if (! sdata->parent)
-    return; /* Main section, skip */
-
-  sdata->offset = sdata->parent->section->size;
-  sdata->parent->section->size += asect->size;
-
-  printf ("offset of %s within %s: %d\n", asect->name, sdata->parent->section->name, sdata->offset);
-}
-
 
 /* Compute the file position of ABFD's section ASECT.  FSARG is a
    pointer to the current file position.
@@ -769,8 +783,6 @@ wasm_compute_section_file_positions (bfd *abfd)
     numbered_sections[i] = NULL;
 
   bfd_map_over_sections (abfd, wasm_register_section, numbered_sections);
-
-  bfd_map_over_sections (abfd, wasm_compute_segment_information, NULL);
 
   fs.pos = bfd_tell (abfd);
   for (i = 0; i < WASM_NUMBERED_SECTIONS; i++)

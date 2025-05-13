@@ -87,6 +87,7 @@ typedef struct wasm_section_tdata
 /* Numbered section name mapping helpers */
 const char * wasm_section_code_to_name (bfd_byte section_code);
 unsigned int wasm_section_name_to_code (const char *name);
+void wasm_flatten_subsections (bfd *abfd);
 
 #ifndef wasm_close_and_cleanup
 #define wasm_close_and_cleanup              _bfd_generic_close_and_cleanup

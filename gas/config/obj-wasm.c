@@ -25,6 +25,8 @@
 
 #include "subsegs.h"
 
+#include "wasm-module.h"
+
 void
 obj_wasm_frob_symbol (symbolS *sym ATTRIBUTE_UNUSED, int *punt ATTRIBUTE_UNUSED)
 {
@@ -46,6 +48,7 @@ void
 obj_wasm_frob_file (void)
 {
   printf("frob file\n");
+  wasm_flatten_subsections (stdoutput);
 }
 
 void
