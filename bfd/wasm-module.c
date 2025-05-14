@@ -180,6 +180,24 @@ wasm_write_uleb128 (bfd *abfd, bfd_vma v)
   return true;
 }
 
+static bool
+wasm_write_uleb128_buf (void *buf, bfd_vma v)
+{
+  do
+    {
+      bfd_byte c = v & 0x7f;
+      v >>= 7;
+
+      if (v)
+        c |= 0x80;
+
+      *((char*)buf++) = c;
+    }
+  while (v);
+
+  return true;
+}
+
 /* Read the LEB128 integer at P, saving it to X; at end of buffer,
    jump to error_return.  */
 #define READ_LEB128(x, p, end)						\
@@ -571,8 +589,6 @@ wasm_section_set_child (asection *parent, asection *child)
 static void
 wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
 {
-  wasm_section_tdata *wasm_section = wasm_section_data(asect);
-
   char * mname;
   mname = wasm_check_subsection (asect);
   if (mname)
@@ -589,6 +605,8 @@ wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
 
           parent = bfd_make_section_with_flags (abfd, pname, SEC_HAS_CONTENTS);
 
+          printf ("output_has_begun: %d\n", abfd->output_has_begun);
+
           if (! parent)
             {
               free (mname);
@@ -601,12 +619,6 @@ wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
 
       free (mname);
     }
-  else
-    {
-      /* This is a parent section. */
-      wasm_section->section->size = 4; /* uleb padding. */
-    }
-
 }
 
 /* Compute segments parent-children offset and size information */
@@ -625,13 +637,58 @@ wasm_flatten_compute_offsets (bfd *abfd ATTRIBUTE_UNUSED,
     return;
   }
 
-  if (! sdata->parent)
-    return; /* Main section, skip */
+  if (! sdata->subsec_count)
+    return; /* Subsection or empty main sec, skip. */
 
-  sdata->offset = sdata->parent->section->size;
-  sdata->parent->section->size += asect->size;
+  unsigned long pos = 0;
+  pos += 5; /* Uleb size padding. */
 
-  printf ("offset of %s within %s: %d\n", asect->name, sdata->parent->section->name, sdata->offset);
+  wasm_section_tdata *curs = sdata->children_head;
+  for (; curs; curs = curs->sibling_next)
+    {
+      pos += sizeof_uleb128 (curs->section->size); /* Entry uleb size */
+      curs->offset = pos;
+      pos += curs->section->size;
+
+      printf ("offset of %s within %s: %d\n", curs->section->name, asect->name, curs->offset);
+    }
+  asect->size = pos;
+}
+
+static void
+wasm_flatten_merge_contents (bfd *abfd ATTRIBUTE_UNUSED,
+                             asection *asect,
+                             void *fsarg ATTRIBUTE_UNUSED)
+{
+  wasm_section_tdata *sdata = wasm_section_data (asect);
+
+  if (! sdata)
+  {
+    printf ("sdata missing for %s\n", asect->name);
+    return;
+  }
+
+  if (! sdata->subsec_count)
+    return; /* Subsection or empty main sec, skip. */
+
+  bfd_byte* contents = (bfd_byte*) bfd_malloc (asect->size);
+
+  contents[0] = 0x80;
+  contents[1] = 0x80;
+  contents[2] = 0x80;
+  contents[3] = 0x80;
+  contents[4] = 0x00;
+
+  wasm_section_tdata *curs = sdata->children_head;
+  for (; curs; curs = curs->sibling_next)
+    {
+      void* cursize_off = contents + curs->offset - sizeof_uleb128 (curs->section->size);
+      wasm_write_uleb128_buf (cursize_off, curs->section->size);
+      memmove (contents + curs->offset, curs->section->contents, curs->section->size);
+    }
+
+  if (! bfd_set_section_contents (abfd, asect, contents, 0, asect->size))
+    assert (false);
 }
 
 void
@@ -639,6 +696,7 @@ wasm_flatten_subsections (bfd *abfd)
 {
   bfd_map_over_sections (abfd, wasm_flatten_link, NULL);
   bfd_map_over_sections (abfd, wasm_flatten_compute_offsets, NULL);
+  bfd_map_over_sections (abfd, wasm_flatten_merge_contents, NULL);
 }
 
 /* A hook to set up object file dependent section information.  */
@@ -717,10 +775,10 @@ wasm_compute_custom_section_file_position (bfd *abfd,
       return;
     }
 
-  printf ("custom sec %s\n", asect->name);
-
   if (startswith (asect->name, WASM_SECTION_PREFIX))
     {
+      printf ("custom sec %s ", asect->name);
+
       const char *name = asect->name + strlen (WASM_SECTION_PREFIX);
       bfd_size_type payload_len = asect->size;
       bfd_size_type name_len = strlen (name);
@@ -745,10 +803,11 @@ wasm_compute_custom_section_file_position (bfd *abfd,
     }
   else
     {
-      printf("non wasm sec %s \n", asect->name);
+      printf("non wasm sec %s ", asect->name);
       asect->filepos = fs->pos;
     }
 
+  printf ("@ %ld with size: %ld\n", asect->filepos, asect->size);
 
   fs->pos += asect->size;
   return;
@@ -793,6 +852,8 @@ wasm_compute_section_file_positions (bfd *abfd)
       if (! sec)
 	continue;
 
+      printf ("numbered sec %s ", sec->name);
+
       size = sec->size;
 
       if (bfd_seek (abfd, fs.pos, SEEK_SET) != 0)
@@ -805,6 +866,8 @@ wasm_compute_section_file_positions (bfd *abfd)
 
       sec->filepos = fs.pos;
       fs.pos += sec->size;
+
+      printf ("@ %ld with size: %ld\n", sec->filepos, sec->size);
     }
 
   fs.failed = false;
@@ -820,46 +883,70 @@ wasm_compute_section_file_positions (bfd *abfd)
 }
 
 static bool
-wasm_set_section_contents (bfd *abfd,
+wasm_set_section_contents (bfd *abfd ATTRIBUTE_UNUSED,
 			   sec_ptr section,
-			   const void *location,
-			   file_ptr offset,
+			   const void *location ATTRIBUTE_UNUSED,
+			   file_ptr offset ATTRIBUTE_UNUSED,
 			   bfd_size_type count)
 {
   if (count == 0)
     return true;
 
-  if (! abfd->output_has_begun
-      && ! wasm_compute_section_file_positions (abfd))
-    return false;
-
   printf ("set_content %s ", section->name);
+  printf (" %ld\n", section->size);
 
-  wasm_section_tdata *sdata = wasm_section_data(section);
-  unsigned int soffset = 0;
+  //wasm_section_tdata *sdata = wasm_section_data(section);
+  //unsigned int soffset = 0;
 
-  if (sdata)
-    soffset = sdata->offset; /* Offset of a subsection within a section */
+  //if (sdata)
+  //  soffset = sdata->offset; /* Offset of a subsection within a section */
 
-  if (sdata->parent)
-  {
-    assert (section->filepos == 0);
-    section->filepos = sdata->parent->section->filepos + soffset;
-  }
+  //if (sdata->parent)
+  //{
+  //  assert (section->filepos == 0);
+  //  section->filepos = sdata->parent->section->filepos + soffset;
+  //}
 
-  printf (" %ld\n", section->filepos + offset);
+  if (! section->contents)
+    section->contents = (bfd_byte*) bfd_zalloc (abfd, section->size);
 
-  if (bfd_seek (abfd, section->filepos + offset, SEEK_SET) != 0
-      || bfd_write (location, count, abfd) != count)
+  if (! section->contents)
     return false;
+
+  memmove (section->contents + offset, location, count);
 
   return true;
+}
+
+static void
+wasm_write_section (bfd* abfd ATTRIBUTE_UNUSED, sec_ptr section ATTRIBUTE_UNUSED, void *fsarg ATTRIBUTE_UNUSED)
+{
+  if (! section->contents)
+    return;
+
+  if (! abfd->output_has_begun)
+    assert (false);
+
+  if (wasm_section_data(section)->parent)
+    return; /* Subsec, do not write. */
+
+  if (bfd_seek (abfd, section->filepos, SEEK_SET) != 0
+      || bfd_write (section->contents, section->size, abfd) != section->size)
+    assert (false);
 }
 
 static bool
 wasm_write_object_contents (bfd* abfd)
 {
   printf ("wasm_write_object_contents\n");
+
+  abfd->output_has_begun = false; /* FIXME: bfd_set_section_contents overrides this with true
+                                     but actually, we haven't output anything yet. */
+
+  wasm_flatten_subsections (abfd);
+
+  if (! wasm_compute_section_file_positions (abfd))
+    return false;
 
   bfd_byte magic[] = WASM_MAGIC;
   bfd_byte vers[] = WASM_VERSION;
@@ -870,6 +957,8 @@ wasm_write_object_contents (bfd* abfd)
   if (bfd_write (magic, sizeof (magic), abfd) != sizeof (magic)
       || bfd_write (vers, sizeof (vers), abfd) != sizeof (vers))
     return false;
+
+  bfd_map_over_sections (abfd, wasm_write_section, NULL);
 
   return true;
 }

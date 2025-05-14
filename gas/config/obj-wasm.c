@@ -48,7 +48,7 @@ void
 obj_wasm_frob_file (void)
 {
   printf("frob file\n");
-  wasm_flatten_subsections (stdoutput);
+  // FIXME: wasm_flatten_subsections (stdoutput);
 }
 
 void
