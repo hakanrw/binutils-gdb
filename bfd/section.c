@@ -1527,7 +1527,8 @@ bfd_set_section_contents (bfd *abfd,
   if (BFD_SEND (abfd, _bfd_set_section_contents,
 		(abfd, section, location, offset, count)))
     {
-      abfd->output_has_begun = true;
+      if (!(abfd->flags & BFD_DEFER_CONTENTS))
+        abfd->output_has_begun = true;
       return true;
     }
 

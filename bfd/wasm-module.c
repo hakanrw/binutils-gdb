@@ -180,9 +180,10 @@ wasm_write_uleb128 (bfd *abfd, bfd_vma v)
   return true;
 }
 
-static bool
+static unsigned int
 wasm_write_uleb128_buf (void *buf, bfd_vma v)
 {
+  unsigned int count = 0;
   do
     {
       bfd_byte c = v & 0x7f;
@@ -192,10 +193,11 @@ wasm_write_uleb128_buf (void *buf, bfd_vma v)
         c |= 0x80;
 
       *((char*)buf++) = c;
+      count++;
     }
   while (v);
 
-  return true;
+  return count;
 }
 
 /* Read the LEB128 integer at P, saving it to X; at end of buffer,
@@ -562,12 +564,12 @@ wasm_check_subsection (asection *asect)
 }
 
 static void
-wasm_section_set_child (asection *parent, asection *child)
+wasm_section_add_segment (asection *parent, asection *segment)
 {
-  printf ("wasm_section_set_child %s <- %s\n", parent->name, child->name);
-
   wasm_section_tdata *parent_sdata = wasm_section_data (parent);
-  wasm_section_tdata *child_sdata = wasm_section_data (child);
+  wasm_section_tdata *child_sdata = wasm_section_data (segment);
+
+  printf ("wasm_section_set_child %s <- %s (%ld)\n", parent->name, segment->name, parent_sdata->subsec_count);
 
   child_sdata->parent = parent_sdata;
 
@@ -581,7 +583,7 @@ wasm_section_set_child (asection *parent, asection *child)
       parent_sdata->children_tail = child_sdata;
     }
 
-  parent_sdata->subsec_count++;
+  child_sdata->index = parent_sdata->subsec_count++;
 }
 
 /* Link subsections and sections during flatten. */
@@ -615,7 +617,7 @@ wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
             }
         }
 
-      wasm_section_set_child (parent, asect);
+      wasm_section_add_segment (parent, asect);
 
       free (mname);
     }
@@ -637,8 +639,10 @@ wasm_flatten_compute_offsets (bfd *abfd ATTRIBUTE_UNUSED,
     return;
   }
 
-  if (! sdata->subsec_count)
-    return; /* Subsection or empty main sec, skip. */
+  if (wasm_is_segment (asect) || sdata->subsec_count == 0)
+    return; /* Subsection or non-segmented section, skip. */
+
+  assert (!asect->contents); /* FIXME: Be empty, or face destruction */
 
   unsigned long pos = 0;
   pos += 5; /* Uleb size padding. */
@@ -668,7 +672,7 @@ wasm_flatten_merge_contents (bfd *abfd ATTRIBUTE_UNUSED,
     return;
   }
 
-  if (! sdata->subsec_count)
+  if (wasm_is_segment (asect) || sdata->subsec_count == 0)
     return; /* Subsection or empty main sec, skip. */
 
   bfd_byte* contents = (bfd_byte*) bfd_malloc (asect->size);
@@ -689,6 +693,8 @@ wasm_flatten_merge_contents (bfd *abfd ATTRIBUTE_UNUSED,
 
   if (! bfd_set_section_contents (abfd, asect, contents, 0, asect->size))
     assert (false);
+
+  bfd_realloc_or_free (contents, 0);
 }
 
 void
@@ -739,6 +745,14 @@ struct compute_section_arg
   bfd_vma pos;
   bool failed;
 };
+
+/*
+static bool
+wasm_write_custom_section_header (const char* name, size_t size)
+{
+
+}
+*/
 
 /* Compute the file position of ABFD's section ASECT.  FSARG is a
    pointer to the current file position.
@@ -885,8 +899,8 @@ wasm_compute_section_file_positions (bfd *abfd)
 static bool
 wasm_set_section_contents (bfd *abfd ATTRIBUTE_UNUSED,
 			   sec_ptr section,
-			   const void *location ATTRIBUTE_UNUSED,
-			   file_ptr offset ATTRIBUTE_UNUSED,
+			   const void *location,
+			   file_ptr offset,
 			   bfd_size_type count)
 {
   if (count == 0)
@@ -935,15 +949,214 @@ wasm_write_section (bfd* abfd ATTRIBUTE_UNUSED, sec_ptr section ATTRIBUTE_UNUSED
     assert (false);
 }
 
+#define WASM_SYMBOL_TABLE    8
+
+#define WASM_SYMTAB_FUNCTION 0
+#define WASM_SYMTAB_DATA     1
+#define WASM_SYMTAB_GLOBAL   2
+#define WASM_SYMTAB_SECTION  3
+#define WASM_SYMTAB_EVENT    4
+#define WASM_SYMTAB_TABLE    5
+
+static bool
+wasm_create_symtab (bfd *abfd, bfd_byte** content, bfd_size_type* size)
+{
+  int count = bfd_get_symcount (abfd);
+  int realcount = 0;
+  bfd_size_type len = 0;
+  bfd_size_type pos = 0;
+  asymbol **table;
+  int i;
+
+  if (count)
+    {
+      table = bfd_get_outsymbols (abfd);
+
+      for (i = 0; i < count; i++)
+        {
+          asymbol *s = table[i];
+
+          if (! bfd_is_local_label (abfd, s)
+              && (s->flags & BSF_DEBUGGING) == 0
+              && s->section != NULL
+              && s->section->output_section != NULL)
+            {
+              wasm_symbol_type *ws = wasmsymbol (s);
+              unsigned int namelen = strlen (s->name);
+              unsigned int kind = ws->kind;
+
+              realcount++;
+              len += 1; /* syminfo kind, uint8 */
+              len += sizeof_uleb128 (0); /* syminfo flags, varuint32 */
+
+              if (kind == WASM_SYMTAB_DATA)
+                {
+                  len += sizeof_uleb128 (namelen);
+                  len += namelen;
+                  len += sizeof_uleb128 (wasm_section_data (s->section)->index);
+                  len += sizeof_uleb128 (s->value);
+                  len += sizeof_uleb128 (ws->size);
+                }
+              else if (kind == WASM_SYMTAB_SECTION)
+                {
+                  len += sizeof_uleb128 (0); /* FIXME */
+                }
+              else if (kind <= WASM_SYMTAB_TABLE)
+                {
+                  len += sizeof_uleb128 (ws->index);
+                  len += sizeof_uleb128 (namelen);
+                  len += namelen;
+                }
+              else
+                {
+                   assert (false);
+                }
+            }
+	}
+    }
+  else
+    {
+      *size = 0;
+      *content = NULL;
+      return true;
+    }
+
+  len += sizeof_uleb128 (realcount);
+  *size = len;
+  *content = bfd_malloc (len);
+
+  pos += wasm_write_uleb128_buf (*content + pos, realcount);
+
+  for (i = 0; i < count; i++)
+    {
+      asymbol *s = table[i];
+
+      if (! bfd_is_local_label (abfd, s)
+          && (s->flags & BSF_DEBUGGING) == 0
+          && s->section != NULL
+          && s->section->output_section != NULL)
+            {
+              wasm_symbol_type *ws = wasmsymbol (s);
+
+              unsigned int kind = ws->kind;
+              unsigned int namelen = strlen (s->name);
+
+              (*content)[pos++] = kind;
+              pos += wasm_write_uleb128_buf (*content + pos, 0); /* FIXME: FLAGS */
+
+              if (kind == WASM_SYMTAB_DATA)
+                {
+                  pos += wasm_write_uleb128_buf (*content + pos, namelen);
+                  memmove (*content + pos, s->name, namelen);
+                  pos += namelen;
+                  pos += wasm_write_uleb128_buf (*content + pos, wasm_section_data (s->section)->index);
+                  pos += wasm_write_uleb128_buf (*content + pos, s->value);
+                  pos += wasm_write_uleb128_buf (*content + pos, ws->size);
+                }
+              else if (kind == WASM_SYMTAB_SECTION)
+                {
+                  pos += wasm_write_uleb128_buf (*content + pos, 0); /* FIXME */
+                }
+              else if (kind <= WASM_SYMTAB_TABLE)
+                {
+                  pos += wasm_write_uleb128_buf (*content + pos, ws->index);
+                  pos += wasm_write_uleb128_buf (*content + pos, namelen);
+                  memmove (*content + pos, s->name, namelen);
+                  pos += namelen;
+                }
+              else
+                {
+                   assert (false);
+                }
+            }
+      }
+
+  if (pos != len)
+    {
+       assert (false);
+    }
+
+  return true;
+}
+
+
+static void
+wasm_create_link_info (bfd* abfd)
+{
+  asection *alink;
+
+  bfd_byte *symbuf;
+  bfd_size_type symtablen;
+  bfd_size_type pos;
+
+  printf ("create wasm linking, output_has_begun: %d\n", abfd->output_has_begun);
+  alink = bfd_make_section_with_flags (abfd, ".wasm.linking", SEC_HAS_CONTENTS);
+  assert (alink);
+
+  wasm_create_symtab (abfd, &symbuf, &symtablen);
+
+  alink->size = sizeof_uleb128 (WASM_LINKING_VERSION);
+
+  if (symtablen)
+    alink->size += 1 /* WASM_SYMBOL_TABLE marker */
+                   + sizeof_uleb128 (symtablen)
+                   + symtablen;
+
+  /* Start emission */
+
+  pos = 0;
+  unsigned char stub = 0;
+  if (! bfd_set_section_contents (abfd, alink, &stub, 0, sizeof (stub))) /* FIXME: allocation hack */
+    assert (false);
+  assert (alink->contents);
+
+  pos += wasm_write_uleb128_buf (alink->contents + pos, WASM_LINKING_VERSION);
+
+  if (symtablen)
+    {
+      alink->contents[pos++] = WASM_SYMBOL_TABLE;
+      pos += wasm_write_uleb128_buf (alink->contents + pos, symtablen);
+      memmove (alink->contents + pos, symbuf, symtablen);
+      pos += symtablen;
+
+      bfd_realloc_or_free (symbuf, 0);
+    }
+
+
+  if (alink->size != pos)
+    {
+      /* Fatal serialization mismatch */
+      assert (false);
+    }
+}
+
+
+//static void
+//wasm_set_section_index (bfd* abfd ATTRIBUTE_UNUSED, sec_ptr section, void *fsarg)
+//{
+//  if (! section->contents || wasm_section_data(section)->parent) /* FIXME: section index on parent/children? */
+//    return;
+//
+//  int *index = (int*) fsarg;
+//  wasm_section_data (section)->index = *index;
+//  printf ("wasm_set_section_index %s: %d\n", section->name, *index);
+//  (*index)++;
+//}
+
+//static void
+//wasm_set_section_indices (bfd* abfd)
+//{
+//  int index = 0;
+//  bfd_map_over_sections (abfd, wasm_set_section_index, &index);
+//}
+
 static bool
 wasm_write_object_contents (bfd* abfd)
 {
-  printf ("wasm_write_object_contents\n");
-
-  abfd->output_has_begun = false; /* FIXME: bfd_set_section_contents overrides this with true
-                                     but actually, we haven't output anything yet. */
+  printf ("wasm_write_object_contents %d\n", abfd->output_has_begun);
 
   wasm_flatten_subsections (abfd);
+  wasm_create_link_info (abfd);
 
   if (! wasm_compute_section_file_positions (abfd))
     return false;
@@ -966,6 +1179,8 @@ wasm_write_object_contents (bfd* abfd)
 static bool
 wasm_mkobject (bfd *abfd)
 {
+  puts ("wasm_mkobject");
+
   tdata_type *tdata = (tdata_type *) bfd_alloc (abfd, sizeof (tdata_type));
 
   if (! tdata)
@@ -975,6 +1190,7 @@ wasm_mkobject (bfd *abfd)
   tdata->symcount = 0;
 
   abfd->tdata.any = tdata;
+  abfd->flags |= BFD_DEFER_CONTENTS; /* Backend flag, defer contents! */
 
   return true;
 }
@@ -1003,13 +1219,18 @@ wasm_canonicalize_symtab (bfd *abfd, asymbol **alocation)
 static asymbol *
 wasm_make_empty_symbol (bfd *abfd)
 {
-  size_t amt = sizeof (asymbol);
-  asymbol *new_symbol = (asymbol *) bfd_zalloc (abfd, amt);
+  size_t amt = sizeof (wasm_symbol_type);
+  wasm_symbol_type *new_symbol = (wasm_symbol_type *) bfd_zalloc (abfd, amt);
 
   if (! new_symbol)
     return NULL;
-  new_symbol->the_bfd = abfd;
-  return new_symbol;
+
+  puts ("new empty symbol");
+
+  new_symbol->kind = WASM_SYMTAB_DATA;
+
+  new_symbol->symbol.the_bfd = abfd;
+  return &new_symbol->symbol;
 }
 
 static void

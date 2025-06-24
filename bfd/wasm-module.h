@@ -27,6 +27,7 @@
 #define WASM_MAGIC	     { 0x00, 'a', 's', 'm' }
 #define SIZEOF_WASM_VERSION  4
 #define WASM_VERSION	     { 0x01, 0x00, 0x00, 0x00 }
+#define WASM_LINKING_VERSION 2
 
 /* Prefix to use to form section names.  */
 #define WASM_SECTION_PREFIX ".wasm."
@@ -63,6 +64,8 @@ typedef struct wasm_symbol_type
 
   /* Wasm symbol fields.  */
   unsigned int index;
+  unsigned int kind;
+  unsigned int size;
 } wasm_symbol_type;
 
 /* We take the address of the first element of an asymbol to ensure that the
@@ -78,11 +81,20 @@ typedef struct wasm_section_tdata
   struct wasm_section_tdata *  children_tail;
   bfd_size_type subsec_count;
   unsigned int offset;
+  unsigned int index;
 } wasm_section_tdata;
 
 /* An accessor macro for the ecoff_section_tdata structure.  */
 #define wasm_section_data(sec) \
   ((wasm_section_tdata *) (sec)->used_by_bfd)
+
+/* Check if an asection is a parent (section) */
+#define wasm_is_parent(sec) \
+  (wasm_section_data(sec)->parent == NULL)
+
+/* Check if an asection is a segment (subsection) */
+#define wasm_is_segment(sec) \
+  (wasm_section_data(sec)->parent != NULL)
 
 /* Numbered section name mapping helpers */
 const char * wasm_section_code_to_name (bfd_byte section_code);
