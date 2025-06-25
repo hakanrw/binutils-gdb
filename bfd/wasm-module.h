@@ -21,6 +21,10 @@
 #ifndef _WASM_MODULE_H
 #define _WASM_MODULE_H
 
+#include "sysdep.h"
+#include "bfd.h"
+#include "libbfd.h"
+
 /* WebAssembly module file header.  Note that WASM_VERSION is a 32-bit
    little-endian integer, not an LEB128-encoded integer.  */
 #define SIZEOF_WASM_MAGIC    4
@@ -56,45 +60,19 @@
 
 /* Numbered section amount */
 #define WASM_NUMBERED_SECTIONS 13 /* FIXME: wasm_numbered_sections_size */
-
-typedef struct wasm_symbol_type
-{
-  /* The actual symbol which the rest of BFD works with.  */
-  asymbol symbol;
-
-  /* Wasm symbol fields.  */
-  unsigned int index;
-  unsigned int kind;
-  unsigned int size;
-} wasm_symbol_type;
-
-/* We take the address of the first element of an asymbol to ensure that the
-   macro is only ever applied to an asymbol.  */
-#define wasmsymbol(asymbol) ((wasm_symbol_type *) (&((asymbol)->the_bfd)))
-
-typedef struct wasm_section_tdata
-{
-  asection *     section;
-  struct wasm_section_tdata *  parent;
-  struct wasm_section_tdata *  sibling_next;
-  struct wasm_section_tdata *  children_head;
-  struct wasm_section_tdata *  children_tail;
-  bfd_size_type subsec_count;
-  unsigned int offset;
-  unsigned int index;
-} wasm_section_tdata;
-
-/* An accessor macro for the ecoff_section_tdata structure.  */
-#define wasm_section_data(sec) \
-  ((wasm_section_tdata *) (sec)->used_by_bfd)
-
-/* Check if an asection is a parent (section) */
-#define wasm_is_parent(sec) \
-  (wasm_section_data(sec)->parent == NULL)
-
-/* Check if an asection is a segment (subsection) */
-#define wasm_is_segment(sec) \
-  (wasm_section_data(sec)->parent != NULL)
+#define WASM_SEC_custom        0
+#define WASM_SEC_type          1
+#define WASM_SEC_import        2
+#define WASM_SEC_function      3
+#define WASM_SEC_table         4
+#define WASM_SEC_memory        5
+#define WASM_SEC_global        6
+#define WASM_SEC_export        7
+#define WASM_SEC_start         8
+#define WASM_SEC_element       9
+#define WASM_SEC_code          10
+#define WASM_SEC_data          11
+#define WASM_SEC_datacount     12
 
 /* Numbered section name mapping helpers */
 const char * wasm_section_code_to_name (bfd_byte section_code);

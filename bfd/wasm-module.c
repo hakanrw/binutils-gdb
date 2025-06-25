@@ -1,7 +1,7 @@
 /* BFD back-end for WebAssembly modules.
    Copyright (C) 2017-2025 Free Software Foundation, Inc.
 
-   Based on srec.c, mmo.c, and binary.c
+   Based on srec.c, cofflink.c, mmo.c, and binary.c
 
    This file is part of BFD, the Binary File Descriptor library.
 
@@ -21,7 +21,7 @@
    MA 02110-1301, USA.  */
 
 /* The WebAssembly module format is a simple object file format
-   including up to 11 numbered sections, plus any number of named
+   including up to 12 numbered sections, plus any number of named
    "custom" sections. It is described at:
    https://github.com/WebAssembly/design/blob/master/BinaryEncoding.md. */
 
@@ -29,7 +29,10 @@
 #include "bfd.h"
 #include "libiberty.h"
 #include "libbfd.h"
+
 #include "wasm-module.h"
+#include "wasm-nsec.h"
+#include "wasm-utils.h"
 
 #include "assert.h" // FIXME: REMOVE
 
@@ -88,144 +91,6 @@ wasm_section_name_to_code (const char *name)
       return i;
 
   return 0;
-}
-
-/* WebAssembly LEB128 integers are sufficiently like DWARF LEB128
-   integers that we use _bfd_safe_read_leb128, but there are two
-   points of difference:
-
-   - WebAssembly requires a 32-bit value to be encoded in at most 5
-     bytes, etc.
-   - _bfd_safe_read_leb128 accepts incomplete LEB128 encodings at the
-     end of the buffer, while these are invalid in WebAssembly.
-
-   Those differences mean that we will accept some files that are
-   invalid WebAssembly.  */
-
-/* Read an LEB128-encoded integer from ABFD's I/O stream, reading one
-   byte at a time.  Set ERROR_RETURN if no complete integer could be
-   read, LENGTH_RETURN to the number of bytes read (including bytes in
-   incomplete numbers).  SIGN means interpret the number as SLEB128. */
-
-static bfd_vma
-wasm_read_leb128 (bfd *abfd,
-		  bool *error_return,
-		  unsigned int *length_return,
-		  bool sign)
-{
-  bfd_vma result = 0;
-  unsigned int num_read = 0;
-  unsigned int shift = 0;
-  unsigned char byte = 0;
-  unsigned char lost, mask;
-  int status = 1;
-
-  while (bfd_read (&byte, 1, abfd) == 1)
-    {
-      num_read++;
-
-      if (shift < CHAR_BIT * sizeof (result))
-	{
-	  result |= ((bfd_vma) (byte & 0x7f)) << shift;
-	  /* These bits overflowed.  */
-	  lost = byte ^ (result >> shift);
-	  /* And this is the mask of possible overflow bits.  */
-	  mask = 0x7f ^ ((bfd_vma) 0x7f << shift >> shift);
-	  shift += 7;
-	}
-      else
-	{
-	  lost = byte;
-	  mask = 0x7f;
-	}
-      if ((lost & mask) != (sign && (bfd_signed_vma) result < 0 ? mask : 0))
-	status |= 2;
-
-      if ((byte & 0x80) == 0)
-	{
-	  status &= ~1;
-	  if (sign && shift < CHAR_BIT * sizeof (result) && (byte & 0x40))
-	    result |= -((bfd_vma) 1 << shift);
-	  break;
-	}
-    }
-
-  if (length_return != NULL)
-    *length_return = num_read;
-  if (error_return != NULL)
-    *error_return = status != 0;
-
-  return result;
-}
-
-/* Encode an integer V as LEB128 and write it to ABFD, return TRUE on
-   success.  */
-
-static bool
-wasm_write_uleb128 (bfd *abfd, bfd_vma v)
-{
-  do
-    {
-      bfd_byte c = v & 0x7f;
-      v >>= 7;
-
-      if (v)
-	c |= 0x80;
-
-      if (bfd_write (&c, 1, abfd) != 1)
-	return false;
-    }
-  while (v);
-
-  return true;
-}
-
-static unsigned int
-wasm_write_uleb128_buf (void *buf, bfd_vma v)
-{
-  unsigned int count = 0;
-  do
-    {
-      bfd_byte c = v & 0x7f;
-      v >>= 7;
-
-      if (v)
-        c |= 0x80;
-
-      *((char*)buf++) = c;
-      count++;
-    }
-  while (v);
-
-  return count;
-}
-
-/* Read the LEB128 integer at P, saving it to X; at end of buffer,
-   jump to error_return.  */
-#define READ_LEB128(x, p, end)						\
-  do									\
-    {									\
-      if ((p) >= (end))							\
-	goto error_return;						\
-      (x) = _bfd_safe_read_leb128 (abfd, &(p), false, (end));		\
-    }									\
-  while (0)
-
-/* Get variable uleb size from value */
-
-static inline unsigned int
-sizeof_uleb128 (unsigned long long value)
-{
-  int size = 0;
-
-  do
-    {
-      value >>= 7;
-      size += 1;
-    }
-  while (value != 0);
-
-  return size;
 }
 
 /* Verify the magic number at the beginning of a WebAssembly module
@@ -450,7 +315,8 @@ wasm_scan (bfd *abfd)
 	  const char *sname = wasm_section_code_to_name (section_code);
 
 	  if (!sname)
-	    goto error_return;
+            sname = ".wasm.unknown";
+	    /* FIXME:? goto error_return; */
 
 	  bfdsec = bfd_make_section_anyway_with_flags (abfd, sname,
 						       SEC_HAS_CONTENTS);
@@ -564,7 +430,7 @@ wasm_check_subsection (asection *asect)
 }
 
 static void
-wasm_section_add_segment (asection *parent, asection *segment)
+wasm_section_set_child (asection *parent, asection *segment)
 {
   wasm_section_tdata *parent_sdata = wasm_section_data (parent);
   wasm_section_tdata *child_sdata = wasm_section_data (segment);
@@ -586,15 +452,19 @@ wasm_section_add_segment (asection *parent, asection *segment)
   child_sdata->index = parent_sdata->subsec_count++;
 }
 
-/* Link subsections and sections during flatten. */
+/* Link subsections and sections. */
 
 static void
-wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
+wasm_section_link (bfd *abfd, asection *asect)
 {
   char * mname;
+
   mname = wasm_check_subsection (asect);
   if (mname)
     {
+      if (wasm_section_name_to_code (mname) == 0)
+        return; /* Custom sections do not get linked */
+
       /* This is a subsection. */
       asection *parent;
       parent = bfd_get_section_by_name (abfd, mname);
@@ -617,7 +487,7 @@ wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
             }
         }
 
-      wasm_section_add_segment (parent, asect);
+      wasm_section_set_child (parent, asect);
 
       free (mname);
     }
@@ -626,83 +496,20 @@ wasm_flatten_link (bfd *abfd, asection *asect, void *fsarg ATTRIBUTE_UNUSED)
 /* Compute segments parent-children offset and size information */
 
 static void
-wasm_flatten_compute_offsets (bfd *abfd ATTRIBUTE_UNUSED,
-                              asection *asect,
-                              void *fsarg ATTRIBUTE_UNUSED)
+wasm_flatten_section (bfd *abfd ATTRIBUTE_UNUSED,
+                      asection *asect,
+                      void *fsarg ATTRIBUTE_UNUSED)
 {
-
-  wasm_section_tdata *sdata = wasm_section_data (asect);
-
-  if (! sdata)
-  {
-    printf ("sdata missing for %s\n", asect->name);
+  if (wasm_is_segment (asect) || wasm_section_data (asect)->subsec_count == 0)
     return;
-  }
 
-  if (wasm_is_segment (asect) || sdata->subsec_count == 0)
-    return; /* Subsection or non-segmented section, skip. */
-
-  assert (!asect->contents); /* FIXME: Be empty, or face destruction */
-
-  unsigned long pos = 0;
-  pos += 5; /* Uleb size padding. */
-
-  wasm_section_tdata *curs = sdata->children_head;
-  for (; curs; curs = curs->sibling_next)
-    {
-      pos += sizeof_uleb128 (curs->section->size); /* Entry uleb size */
-      curs->offset = pos;
-      pos += curs->section->size;
-
-      printf ("offset of %s within %s: %d\n", curs->section->name, asect->name, curs->offset);
-    }
-  asect->size = pos;
+  wasm_nsec_section_flatten (asect);
 }
 
 static void
-wasm_flatten_merge_contents (bfd *abfd ATTRIBUTE_UNUSED,
-                             asection *asect,
-                             void *fsarg ATTRIBUTE_UNUSED)
+wasm_flatten_sections (bfd *abfd)
 {
-  wasm_section_tdata *sdata = wasm_section_data (asect);
-
-  if (! sdata)
-  {
-    printf ("sdata missing for %s\n", asect->name);
-    return;
-  }
-
-  if (wasm_is_segment (asect) || sdata->subsec_count == 0)
-    return; /* Subsection or empty main sec, skip. */
-
-  bfd_byte* contents = (bfd_byte*) bfd_malloc (asect->size);
-
-  contents[0] = 0x80;
-  contents[1] = 0x80;
-  contents[2] = 0x80;
-  contents[3] = 0x80;
-  contents[4] = 0x00;
-
-  wasm_section_tdata *curs = sdata->children_head;
-  for (; curs; curs = curs->sibling_next)
-    {
-      void* cursize_off = contents + curs->offset - sizeof_uleb128 (curs->section->size);
-      wasm_write_uleb128_buf (cursize_off, curs->section->size);
-      memmove (contents + curs->offset, curs->section->contents, curs->section->size);
-    }
-
-  if (! bfd_set_section_contents (abfd, asect, contents, 0, asect->size))
-    assert (false);
-
-  bfd_realloc_or_free (contents, 0);
-}
-
-void
-wasm_flatten_subsections (bfd *abfd)
-{
-  bfd_map_over_sections (abfd, wasm_flatten_link, NULL);
-  bfd_map_over_sections (abfd, wasm_flatten_compute_offsets, NULL);
-  bfd_map_over_sections (abfd, wasm_flatten_merge_contents, NULL);
+  bfd_map_over_sections (abfd, wasm_flatten_section, NULL);
 }
 
 /* A hook to set up object file dependent section information.  */
@@ -717,6 +524,12 @@ wasm_new_section_hook (bfd *abfd, asection *newsect)
   wasm_section_tdata *wasm_section = bfd_zalloc (abfd, amt);
   newsect->used_by_bfd = wasm_section;
   wasm_section->section = newsect;
+
+  wasm_section_link (abfd, newsect);
+  if (wasm_is_segment (newsect))
+    wasm_nsec_subsec_initialize (newsect);
+  else
+    wasm_nsec_section_initialize (newsect);
 
   if (!newsect->used_by_bfd)
     return false;
@@ -987,24 +800,24 @@ wasm_create_symtab (bfd *abfd, bfd_byte** content, bfd_size_type* size)
 
               realcount++;
               len += 1; /* syminfo kind, uint8 */
-              len += sizeof_uleb128 (0); /* syminfo flags, varuint32 */
+              len += wasm_sizeof_uleb128 (0); /* syminfo flags, varuint32 */
 
               if (kind == WASM_SYMTAB_DATA)
                 {
-                  len += sizeof_uleb128 (namelen);
+                  len += wasm_sizeof_uleb128 (namelen);
                   len += namelen;
-                  len += sizeof_uleb128 (wasm_section_data (s->section)->index);
-                  len += sizeof_uleb128 (s->value);
-                  len += sizeof_uleb128 (ws->size);
+                  len += wasm_sizeof_uleb128 (wasm_section_data (s->section)->index);
+                  len += wasm_sizeof_uleb128 (s->value);
+                  len += wasm_sizeof_uleb128 (ws->size);
                 }
               else if (kind == WASM_SYMTAB_SECTION)
                 {
-                  len += sizeof_uleb128 (0); /* FIXME */
+                  len += wasm_sizeof_uleb128 (0); /* FIXME */
                 }
               else if (kind <= WASM_SYMTAB_TABLE)
                 {
-                  len += sizeof_uleb128 (ws->index);
-                  len += sizeof_uleb128 (namelen);
+                  len += wasm_sizeof_uleb128 (wasm_section_data (s->section)->index);
+                  len += wasm_sizeof_uleb128 (namelen);
                   len += namelen;
                 }
               else
@@ -1021,7 +834,7 @@ wasm_create_symtab (bfd *abfd, bfd_byte** content, bfd_size_type* size)
       return true;
     }
 
-  len += sizeof_uleb128 (realcount);
+  len += wasm_sizeof_uleb128 (realcount);
   *size = len;
   *content = bfd_malloc (len);
 
@@ -1059,7 +872,7 @@ wasm_create_symtab (bfd *abfd, bfd_byte** content, bfd_size_type* size)
                 }
               else if (kind <= WASM_SYMTAB_TABLE)
                 {
-                  pos += wasm_write_uleb128_buf (*content + pos, ws->index);
+                  pos += wasm_write_uleb128_buf (*content + pos, wasm_section_data (s->section)->index);
                   pos += wasm_write_uleb128_buf (*content + pos, namelen);
                   memmove (*content + pos, s->name, namelen);
                   pos += namelen;
@@ -1095,11 +908,11 @@ wasm_create_link_info (bfd* abfd)
 
   wasm_create_symtab (abfd, &symbuf, &symtablen);
 
-  alink->size = sizeof_uleb128 (WASM_LINKING_VERSION);
+  alink->size = wasm_sizeof_uleb128 (WASM_LINKING_VERSION);
 
   if (symtablen)
     alink->size += 1 /* WASM_SYMBOL_TABLE marker */
-                   + sizeof_uleb128 (symtablen)
+                   + wasm_sizeof_uleb128 (symtablen)
                    + symtablen;
 
   /* Start emission */
@@ -1155,7 +968,7 @@ wasm_write_object_contents (bfd* abfd)
 {
   printf ("wasm_write_object_contents %d\n", abfd->output_has_begun);
 
-  wasm_flatten_subsections (abfd);
+  wasm_flatten_sections (abfd);
   wasm_create_link_info (abfd);
 
   if (! wasm_compute_section_file_positions (abfd))
