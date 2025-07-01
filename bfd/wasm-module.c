@@ -318,8 +318,9 @@ wasm_scan (bfd *abfd)
             sname = ".wasm.unknown";
 	    /* FIXME:? goto error_return; */
 
-	  bfdsec = bfd_make_section_anyway_with_flags (abfd, sname,
-						       SEC_HAS_CONTENTS);
+	  bfdsec = bfd_make_section_old_way (abfd, sname); /* FIXME: old_way or anyway_with_flags? */
+          bfd_set_section_flags (bfdsec, SEC_HAS_CONTENTS);
+
 	  if (bfdsec == NULL)
 	    goto error_return;
 
@@ -471,6 +472,9 @@ wasm_section_link (bfd *abfd, asection *asect)
 
       if (! parent)
         {
+          /* Since we are pre-creating in mkobject now, this should never reach */
+          assert (false);
+
           /* Parent does not exist. Create. */
           char *pname;
           pname = strdup (mname);
@@ -500,7 +504,7 @@ wasm_flatten_section (bfd *abfd ATTRIBUTE_UNUSED,
                       asection *asect,
                       void *fsarg ATTRIBUTE_UNUSED)
 {
-  if (wasm_is_segment (asect) || wasm_section_data (asect)->subsec_count == 0)
+  if (wasm_is_segment (asect))
     return;
 
   wasm_nsec_section_flatten (asect);
@@ -511,6 +515,26 @@ wasm_flatten_sections (bfd *abfd)
 {
   bfd_map_over_sections (abfd, wasm_flatten_section, NULL);
 }
+
+/* Reconstruct sections after read */
+
+static void
+wasm_reconstruct_section (bfd *abfd ATTRIBUTE_UNUSED,
+                          asection *asect,
+                          void *fsarg ATTRIBUTE_UNUSED)
+{
+  if (! asect->contents || wasm_is_segment (asect))
+    return;
+
+  wasm_nsec_section_reconstruct (asect);
+}
+
+static void
+wasm_reconstruct_sections (bfd *abfd)
+{
+  bfd_map_over_sections (abfd, wasm_reconstruct_section, NULL);
+}
+
 
 /* A hook to set up object file dependent section information.  */
 
@@ -524,6 +548,8 @@ wasm_new_section_hook (bfd *abfd, asection *newsect)
   wasm_section_tdata *wasm_section = bfd_zalloc (abfd, amt);
   newsect->used_by_bfd = wasm_section;
   wasm_section->section = newsect;
+
+  wasm_section->type = wasm_section_name_to_code (newsect->name);
 
   wasm_section_link (abfd, newsect);
   if (wasm_is_segment (newsect))
@@ -676,7 +702,7 @@ wasm_compute_section_file_positions (bfd *abfd)
       sec_ptr sec = numbered_sections[i];
       bfd_size_type size;
 
-      if (! sec)
+      if (! sec || ! sec->contents)
 	continue;
 
       printf ("numbered sec %s ", sec->name);
@@ -740,6 +766,7 @@ wasm_set_section_contents (bfd *abfd ATTRIBUTE_UNUSED,
   if (! section->contents)
     return false;
 
+  section->alloced = true;
   memmove (section->contents + offset, location, count);
 
   return true;
@@ -1005,6 +1032,20 @@ wasm_mkobject (bfd *abfd)
   abfd->tdata.any = tdata;
   abfd->flags |= BFD_DEFER_CONTENTS; /* Backend flag, defer contents! */
 
+  /* Create empty sections for each numbered section (except custom). */
+  for (int i = 1; i < WASM_NUMBERED_SECTIONS; ++i)
+    {
+      const char *name = wasm_numbered_sections[i];
+      if (!name)
+        continue;
+
+      asection *sec = bfd_make_section_with_flags (abfd, name,
+                                                   SEC_HAS_CONTENTS);
+
+      if (!sec)
+        return false;
+    }
+
   return true;
 }
 
@@ -1105,6 +1146,9 @@ wasm_object_p (bfd *abfd)
   s = bfd_get_section_by_name (abfd, WASM_NAME_SECTION);
   if (s != NULL && wasm_scan_name_function_section (abfd, s))
     abfd->flags |= HAS_SYMS;
+
+
+  wasm_reconstruct_sections (abfd);
 
   return _bfd_no_cleanup;
 }

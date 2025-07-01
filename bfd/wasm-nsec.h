@@ -21,7 +21,6 @@
 #ifndef _WASM_NSEC_H
 #define _WASM_NSEC_H
 
-#include "sysdep.h"
 #include "bfd.h"
 #include "wasm-utils.h"
 
@@ -49,10 +48,7 @@ typedef struct wasm_type_segment_meta
 
 /* -------------------- Function section -------------------- */
 
-typedef struct wasm_function_section_meta
-{
-  unsigned int local_function_count;
-} wasm_function_section_meta;
+typedef struct wasm_function_section_meta { } wasm_function_section_meta;
 
 typedef struct wasm_function_segment_meta
 {
@@ -151,6 +147,17 @@ typedef struct wasm_data_segment_meta
   /* TODO: Add offset expr, segment size, memory index */
 } wasm_data_segment_meta;
 
+
+/* -------------------- Data Count section -------------------- */
+
+typedef struct wasm_datacount_section_meta { } wasm_datacount_section_meta;
+
+typedef struct wasm_datacount_segment_meta
+{
+  /* TODO: Does anything even go here? */
+} wasm_datacount_segment_meta;
+
+
 /* Sections */
 
 int wasm_nsec_section_flatten (asection* asect);
@@ -163,5 +170,6 @@ int wasm_nsec_subsec_parse_meta (asection *asect, bfd_byte *start, bfd_byte *end
 int wasm_nsec_subsec_serialize_meta (asection *asect, bfd_byte *start);
 int wasm_nsec_subsec_meta_len (asection *asect);
 int wasm_nsec_subsec_initialize (asection *asect);
+int wasm_nsec_subsec_len (asection *asect);
 
 #endif /* _WASM_NSEC_H */
