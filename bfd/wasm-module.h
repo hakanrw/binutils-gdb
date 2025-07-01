@@ -21,7 +21,6 @@
 #ifndef _WASM_MODULE_H
 #define _WASM_MODULE_H
 
-#include "sysdep.h"
 #include "bfd.h"
 #include "libbfd.h"
 

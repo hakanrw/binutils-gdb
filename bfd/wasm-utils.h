@@ -21,7 +21,6 @@
 #ifndef _WASM_UTILS_H
 #define _WASM_UTILS_H
 
-#include "sysdep.h"
 #include "bfd.h"
 #include <limits.h>
 
@@ -50,6 +49,7 @@ typedef struct wasm_section_tdata
   bfd_size_type subsec_count;
   unsigned int offset;
   unsigned int index;
+  unsigned int type;
   void * meta;
 } wasm_section_tdata;
 
@@ -79,8 +79,6 @@ typedef struct wasm_section_tdata
     }                                                                   \
   while (0)
 
-unsigned int wasm_sizeof_uleb128 (unsigned long long value);
-
 bfd_vma wasm_read_leb128 (bfd *abfd,
                           bool *error_return,
                           unsigned int *length_return,
@@ -88,6 +86,13 @@ bfd_vma wasm_read_leb128 (bfd *abfd,
 
 bool wasm_write_uleb128 (bfd *abfd, bfd_vma v);
 
+unsigned int wasm_sizeof_uleb128 (bfd_vma value);
+
 unsigned int wasm_write_uleb128_buf (void *buf, bfd_vma v);
+
+unsigned int wasm_read_uleb128_buf (void *start, void *limit /* exclusive */,
+                                    bfd_vma *v);
+
+size_t wasm_estimate_digit (unsigned int num);
 
 #endif /* _WASM_UTILS_H */

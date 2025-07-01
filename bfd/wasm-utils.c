@@ -25,6 +25,7 @@
    "custom" sections. It is described at:
    https://github.com/WebAssembly/design/blob/master/BinaryEncoding.md. */
 
+#include "sysdep.h"
 #include "wasm-utils.h"
 
 /* WebAssembly LEB128 integers are sufficiently like DWARF LEB128
@@ -137,10 +138,40 @@ wasm_write_uleb128_buf (void *buf, bfd_vma v)
   return count;
 }
 
+unsigned int
+wasm_read_uleb128_buf (void *start, void *limit /* exclusive */, bfd_vma *v)
+{
+  char *p = (char *) start;
+  char *end = (char *) limit;
+
+  bfd_vma result = 0;
+  unsigned int shift = 0;
+  unsigned int count = 0;
+
+  while (p < end)
+    {
+      uint8_t byte = *p++;
+      count++;
+
+      result |= ((bfd_vma)(byte & 0x7F)) << shift;
+      shift += 7;
+
+      if ((byte & 0x80) == 0)
+        {
+          *v = result;
+          return count;
+        }
+    }
+
+  /* Buffer ran out before we reached the end of the LEB128. */
+  return 0;
+}
+
+
 /* Get variable uleb size from value */
 
 unsigned int
-wasm_sizeof_uleb128 (unsigned long long value)
+wasm_sizeof_uleb128 (bfd_vma value)
 {
   int size = 0;
 
@@ -152,4 +183,17 @@ wasm_sizeof_uleb128 (unsigned long long value)
   while (value != 0);
 
   return size;
+}
+
+size_t
+wasm_estimate_digit (unsigned int num)
+{
+  size_t digit = 0;
+  if (num == 0)
+    return 1;
+
+  for (digit = 0; num ; num /= 10)
+    digit++;
+
+  return digit;
 }
