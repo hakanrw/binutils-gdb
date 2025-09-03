@@ -2070,6 +2070,11 @@ struct bfd
   /* Don't generate ELF section header.  */
 #define BFD_NO_SECTION_HEADER  0x800000
 
+  /* Defer writing section contents to the output file.
+     bfd_set_section_contents will allocate memory and copy data there,
+     but actual output is written later by the backend in *_write_object_contents.  */
+#define BFD_DEFER_CONTENTS     0x1600000
+
   /* Flags bits which are for BFD use only.  */
 #define BFD_FLAGS_FOR_BFD_USE_MASK \
   (BFD_IN_MEMORY | BFD_COMPRESS | BFD_DECOMPRESS | BFD_LINKER_CREATED \
