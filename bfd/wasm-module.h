@@ -49,4 +49,33 @@
 /* The section to report wasm symbols in.  */
 #define WASM_SECTION_FUNCTION_INDEX ".space.function_index"
 
+typedef struct wasm_symbol_type
+{
+  /* The actual symbol which the rest of BFD works with.  */
+  asymbol symbol;
+
+  /* Wasm symbol fields.  */
+  unsigned int index;
+} wasm_symbol_type;
+
+/* We take the address of the first element of an asymbol to ensure that the
+   macro is only ever applied to an asymbol.  */
+#define wasmsymbol(asymbol) ((wasm_symbol_type *) (&((asymbol)->the_bfd)))
+
+/* Section specific data */
+typedef struct wasm_section_tdata
+{
+  asection *     section;
+  struct wasm_section_tdata *  parent;
+  struct wasm_section_tdata *  sibling_next;
+  struct wasm_section_tdata *  children_head;
+  struct wasm_section_tdata *  children_tail;
+  bfd_size_type subsec_count;
+  unsigned int offset;
+} wasm_section_tdata;
+
+/* An accessor macro for the ecoff_section_tdata structure.  */
+#define wasm_section_data(sec) \
+  ((wasm_section_tdata *) (sec)->used_by_bfd)
+
 #endif /* _WASM_MODULE_H */

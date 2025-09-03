@@ -21,7 +21,7 @@
    MA 02110-1301, USA.  */
 
 /* The WebAssembly module format is a simple object file format
-   including up to 11 numbered sections, plus any number of named
+   including up to 12 numbered sections, plus any number of named
    "custom" sections. It is described at:
    https://github.com/WebAssembly/design/blob/master/BinaryEncoding.md. */
 
@@ -56,6 +56,7 @@ static const char * const wasm_numbered_sections[] =
   WASM_SECTION ( 9, "element"),
   WASM_SECTION (10, "code"),
   WASM_SECTION (11, "data"),
+  WASM_SECTION (12, "datacount"),
 };
 
 #define WASM_NUMBERED_SECTIONS ARRAY_SIZE (wasm_numbered_sections)
@@ -485,6 +486,118 @@ wasm_scan (bfd *abfd)
   return false;
 }
 
+/* Check if given section is a subsection. If so, return main
+   section name, otherwise return NULL */
+static char *
+wasm_check_subsection (asection *asect)
+{
+  char * mname = NULL;
+  const char * c = asect->name;
+  unsigned int dotcount = 0;
+
+  if (strncmp (c, WASM_SECTION_PREFIX,
+	       sizeof(WASM_SECTION_PREFIX) - 2) == 0)
+    c += sizeof(WASM_SECTION_PREFIX) - 2; /* skip wasm */
+
+  for (; *c; c++)
+    {
+      if (*c == '.')
+        dotcount++;
+
+      if (dotcount == 2)
+        {
+          unsigned int len = c - asect->name;
+          mname = xmalloc (len + 1);
+          memcpy (mname, asect->name, len);
+          mname[len] = '\0'; /* null termination */
+          break;
+        }
+    }
+
+  return mname;
+}
+
+static void
+wasm_section_set_child (asection *parent, asection *child)
+{
+  wasm_section_tdata *parent_sdata = wasm_section_data (parent);
+  wasm_section_tdata *child_sdata = wasm_section_data (child);
+
+  child_sdata->parent = parent_sdata;
+
+  if (! parent_sdata->children_tail)
+    {
+      parent_sdata->children_tail = parent_sdata->children_head = child_sdata;
+    }
+  else
+    {
+      parent_sdata->children_tail->sibling_next = child_sdata;
+      parent_sdata->children_tail = child_sdata;
+    }
+
+  child_sdata->index = parent_sdata->subsec_count++;
+}
+
+/* Link subsections and sections. */
+
+static void
+wasm_section_link (bfd *abfd, asection *asect)
+{
+  char *mname = wasm_check_subsection (asect);
+  asection *parent;
+  if (mname)
+    {
+      if (bfd_wasm_section_name_to_code (mname) == 0)
+        return; /* Custom sections do not get linked */
+
+      /* This is a subsection. */
+      parent = bfd_get_section_by_name (abfd, mname);
+
+      if (! parent)
+        {
+          /* Parent does not exist. Create. */
+          char *pname = strdup (mname);
+          parent = bfd_make_section (abfd, pname);
+	  BFD_ASSERT (parent);
+        }
+
+      wasm_section_set_child (parent, asect);
+      free (mname);
+    }
+}
+
+/* Compute segments parent-children offset and size information */
+
+static void
+wasm_flatten_section (bfd *abfd ATTRIBUTE_UNUSED,
+                      asection *asect ATTRIBUTE_UNUSED,
+                      void *fsarg ATTRIBUTE_UNUSED)
+{ }
+
+static bool
+wasm_flatten_sections (bfd *abfd)
+{
+  bool fine = true;
+  bfd_map_over_sections (abfd, wasm_flatten_section, &fine);
+  return fine;
+}
+
+/* Reconstruct sections after read */
+
+static void
+wasm_reconstruct_section (bfd *abfd ATTRIBUTE_UNUSED,
+                          asection *asect ATTRIBUTE_UNUSED,
+                          void *fsarg ATTRIBUTE_UNUSED)
+{ }
+
+static bool
+wasm_reconstruct_sections (bfd *abfd)
+{
+  bool fine = true;
+  bfd_map_over_sections (abfd, wasm_reconstruct_section, &fine);
+  return fine;
+}
+
 /* Put a numbered section ASECT of ABFD into the table of numbered
    sections pointed to by FSARG.  */
 
@@ -500,6 +613,26 @@ wasm_register_section (bfd *abfd ATTRIBUTE_UNUSED,
     return;
 
   numbered_sections[idx] = asect;
+}
+
+/* A hook to set up object file dependent section information.  */
+
+static bool
+wasm_new_section_hook (bfd *abfd, asection *newsect)
+{
+  size_t amt = sizeof (struct wasm_section_tdata);
+
+  wasm_section_tdata *wasm_section = bfd_zalloc (abfd, amt);
+  newsect->used_by_bfd = wasm_section;
+  if (! wasm_section)
+    return false;
+  
+  wasm_section->section = newsect;
+  wasm_section->type = wasm_section_name_to_code (newsect->name);
+  wasm_section_link (abfd, newsect);
+
+  /* We allow more than three sections internally.  */
+  return _bfd_generic_new_section_hook (abfd, newsect);
 }
 
 struct compute_section_arg
@@ -523,6 +656,7 @@ wasm_compute_custom_section_file_position (bfd *abfd,
 					   void *fsarg)
 {
   struct compute_section_arg *fs = fsarg;
+  wasm_section_tdata *sdata;
   int idx;
 
   if (fs->failed)
@@ -532,6 +666,14 @@ wasm_compute_custom_section_file_position (bfd *abfd,
 
   if (idx != 0)
     return;
+
+  sdata = wasm_section_data(asect);
+
+  if (sdata && sdata->parent)
+    {
+      /* This is a subsection. Skip it and handle it in main section */
+      return;
+    }
 
   if (startswith (asect->name, WASM_SECTION_PREFIX))
     {
@@ -634,18 +776,39 @@ wasm_set_section_contents (bfd *abfd,
 			   file_ptr offset,
 			   bfd_size_type count)
 {
+  flagword flags;
   if (count == 0)
     return true;
 
-  if (! abfd->output_has_begun
-      && ! wasm_compute_section_file_positions (abfd))
+  if (! section->contents)
+    section->contents = (bfd_byte*) bfd_zalloc (abfd, section->size);
+
+  if (! section->contents)
     return false;
 
-  if (bfd_seek (abfd, section->filepos + offset, SEEK_SET) != 0
-      || bfd_write (location, count, abfd) != count)
+  flags = bfd_section_flags (section);
+  flags |= SEC_IN_MEMORY;
+  if (! bfd_set_section_flags (section, flags))
     return false;
+
+  section->alloced = true;
+  memmove (section->contents + offset, location, count);
 
   return true;
+}
+
+static void
+wasm_write_section (bfd* abfd ATTRIBUTE_UNUSED, sec_ptr section ATTRIBUTE_UNUSED, void *fsarg ATTRIBUTE_UNUSED)
+{
+  BFD_ASSERT (abfd->output_has_begun);
+  if (! section->contents)
+    return;
+
+  if (wasm_section_data(section)->parent)
+    return; /* Subsec, do not write. */
+
+  BFD_ASSERT (bfd_seek (abfd, section->filepos, SEEK_SET) == 0
+	      && bfd_write (section->contents, section->size, abfd) == section->size);
 }
 
 static bool
@@ -654,12 +817,23 @@ wasm_write_object_contents (bfd* abfd)
   bfd_byte magic[] = WASM_MAGIC;
   bfd_byte vers[] = WASM_VERSION;
 
+  if (! wasm_flatten_sections (abfd))
+    {
+      bfd_set_error (bfd_error_bad_value);
+      return false;
+    }
+
+  if (! wasm_compute_section_file_positions (abfd))
+    return false;
+
   if (bfd_seek (abfd, 0, SEEK_SET) != 0)
     return false;
 
   if (bfd_write (magic, sizeof (magic), abfd) != sizeof (magic)
       || bfd_write (vers, sizeof (vers), abfd) != sizeof (vers))
     return false;
+
+  bfd_map_over_sections (abfd, wasm_write_section, NULL);
 
   return true;
 }
@@ -676,6 +850,7 @@ wasm_mkobject (bfd *abfd)
   tdata->symcount = 0;
 
   abfd->tdata.any = tdata;
+  abfd->flags |= BFD_DEFER_CONTENTS; /* Backend flag, defer contents! */
 
   return true;
 }
@@ -773,8 +948,20 @@ wasm_object_p (bfd *abfd)
   if (s != NULL && wasm_scan_name_function_section (abfd, s))
     abfd->flags |= HAS_SYMS;
 
+  if (! wasm_reconstruct_sections (abfd))
+    {
+      bfd_set_error (bfd_error_bad_value);
+      return NULL;
+    }
+
   return _bfd_no_cleanup;
 }
+
+/* BFD_JUMP_TABLE_GENERIC */
+#define wasm_close_and_cleanup              _bfd_generic_close_and_cleanup
+#define wasm_bfd_free_cached_info           _bfd_generic_bfd_free_cached_info
+#define wasm_get_section_contents           _bfd_generic_get_section_contents
+#define wasm_get_section_contents_in_window _bfd_generic_get_section_contents_in_window
 
 /* BFD_JUMP_TABLE_WRITE */
 #define wasm_set_arch_mach		  _bfd_generic_set_arch_mach
@@ -834,7 +1021,7 @@ const bfd_target wasm_vec =
     _bfd_bool_bfd_false_error,
   },
 
-  BFD_JUMP_TABLE_GENERIC (_bfd_generic),
+  BFD_JUMP_TABLE_GENERIC (wasm),
   BFD_JUMP_TABLE_COPY (_bfd_generic),
   BFD_JUMP_TABLE_CORE (_bfd_nocore),
   BFD_JUMP_TABLE_ARCHIVE (_bfd_noarchive),
