@@ -864,7 +864,7 @@ wasm_nsec_symbols_adjust (bfd *abfd)
 	    currsym->value += sdata->offset;
 	}
 
-      printf ("symbol %s at %s value %ld idx %d\n", currsym->name ? currsym->name : "<unknown>", currsym->section->name ? currsym->section->name : "<unknown>", currsym->value, wasmsymbol (currsym)->index);
+      printf ("symbol %s at %s value %ld idx %d size %d\n", currsym->name ? currsym->name : "<unknown>", currsym->section->name ? currsym->section->name : "<unknown>", currsym->value, wasmsymbol (currsym)->index, wasmsymbol (currsym)->size);
     }
 
   return true;
