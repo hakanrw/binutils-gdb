@@ -856,6 +856,7 @@ BFD32_BACKENDS = \
 	vms-misc.lo \
 	wasm-module.lo \
 	wasm-common.lo \
+	wasm-nsec.lo \
 	xcofflink.lo \
 	xsym.lo \
 	xtensa-dynconfig.lo \
@@ -989,6 +990,7 @@ BFD32_BACKENDS_CFILES = \
 	vms-misc.c \
 	wasm-module.c \
 	wasm-common.c \
+	wasm-nsec.c \
 	xcofflink.c \
 	xsym.c \
 	xtensa-dynconfig.c \
@@ -1183,7 +1185,7 @@ SOURCE_HFILES = \
 	pef.h pef-traceback.h peicode.h plugin.h \
 	som.h sysdep.h \
 	version.h vms.h \
-	wasm-module.h wasm-common.h \
+	wasm-module.h wasm-common.h wasm-nsec.h \
 	xcofflink.h xsym.h
 
 BUILD_HFILES = \
@@ -1737,6 +1739,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/vms-misc.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/wasm-module.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/wasm-common.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/wasm-nsec.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xcofflink.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xsym.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xtensa-dynconfig.Plo@am__quote@

@@ -26,6 +26,8 @@
 
 /* ULEB128 helpers */
 
+#define WASM_ULEB128_PAD_LEN 5
+
 /* Read the LEB128 integer at P, saving it to X; at end of buffer,
    jump to error_return.  */
 #define READ_LEB128(x, p, end)                                          \
@@ -45,6 +47,11 @@ bfd_vma wasm_read_leb128 (bfd *abfd,
 bool wasm_write_uleb128 (bfd *abfd, bfd_vma v);
 
 unsigned int wasm_sizeof_uleb128 (bfd_vma value);
+
+unsigned int wasm_write_uleb128_buf_min (void *buf, bfd_vma v,
+					 unsigned int min);
+
+unsigned int wasm_write_uleb128_buf_pad (void *buf, bfd_vma v);
 
 unsigned int wasm_write_uleb128_buf (void *buf, bfd_vma v);
 

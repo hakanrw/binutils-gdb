@@ -1,7 +1,7 @@
 /* BFD back-end for WebAssembly modules.
    Copyright (C) 2017-2025 Free Software Foundation, Inc.
 
-   Based on srec.c, mmo.c, and binary.c
+   Based on srec.c, cofflink.c, mmo.c, and binary.c
 
    This file is part of BFD, the Binary File Descriptor library.
 
@@ -32,6 +32,7 @@
 
 #include "wasm-module.h"
 #include "wasm-common.h"
+#include "wasm-nsec.h"
 
 #include <limits.h>
 #ifndef CHAR_BIT
@@ -89,6 +90,31 @@ bfd_wasm_section_name_to_code (const char *name)
       return i;
 
   return 0;
+}
+
+/* Create a new empty segment as part of a parent section */
+
+asection *
+bfd_wasm_make_empty_segment (bfd *abfd, asection *parent)
+{
+  asection *segsec;
+  unsigned int segidx;
+  unsigned int segnamelen;
+  char *segname;
+  wasm_section_tdata *parentdata;
+  BFD_ASSERT (wasm_is_parent (parent));
+
+  segidx = wasm_section_data (parent)->subsec_count;
+  segnamelen = strlen (parent->name) + 1 /* . */
+    + wasm_estimate_digit (segidx) + 1 /* NUL */;
+  segname = bfd_alloc (abfd, segnamelen);
+  snprintf (segname, segnamelen, "%s.%u", parent->name, segidx);
+
+  segsec = bfd_make_section (abfd, segname);
+  BFD_ASSERT (segsec);
+  parentdata = wasm_section_data (segsec)->parent;
+  BFD_ASSERT (parentdata && parentdata->section == parent);
+  return segsec;
 }
 
 /* Verify the magic number at the beginning of a WebAssembly module
@@ -309,13 +335,11 @@ wasm_scan (bfd *abfd)
       if (section_code != 0)
 	{
 	  const char *sname = bfd_wasm_section_code_to_name (section_code);
-
 	  if (!sname)
-	    goto error_return;
+	    sname = WASM_SECTION_PREFIX ".unknown";
 
-	  bfdsec = bfd_make_section_anyway_with_flags (abfd, sname,
-						       SEC_HAS_CONTENTS);
-	  if (bfdsec == NULL)
+	  bfdsec = bfd_make_section_old_way (abfd, sname);
+	  if (bfdsec == NULL || ! bfd_set_section_flags (bfdsec, SEC_HAS_CONTENTS))
 	    goto error_return;
 
 	  bfdsec->size = wasm_read_leb128 (abfd, &error, &bytes_read, false);
@@ -455,15 +479,9 @@ wasm_section_link (bfd *abfd, asection *asect)
 
       /* This is a subsection. */
       parent = bfd_get_section_by_name (abfd, mname);
-
-      if (! parent)
-        {
-          /* Parent does not exist. Create. */
-          char *pname = strdup (mname);
-          parent = bfd_make_section (abfd, pname);
-	  BFD_ASSERT (parent);
-        }
-
+      /* We create all numbered section parents in in wasm_mkobject */
+      BFD_ASSERT (parent);
+      
       wasm_section_set_child (parent, asect);
       free (mname);
     }
@@ -473,9 +491,16 @@ wasm_section_link (bfd *abfd, asection *asect)
 
 static void
 wasm_flatten_section (bfd *abfd ATTRIBUTE_UNUSED,
-                      asection *asect ATTRIBUTE_UNUSED,
-                      void *fsarg ATTRIBUTE_UNUSED)
-{ }
+                      asection *asect,
+                      void *fsarg)
+{
+  bool *fine = (bool *)fsarg;
+  if (! wasm_section_data (asect)->type || wasm_is_segment (asect))
+    return;
+
+  if (! wasm_nsec_section_flatten (asect))
+    *fine = false;
+}
 
 static bool
 wasm_flatten_sections (bfd *abfd)
@@ -489,9 +514,17 @@ wasm_flatten_sections (bfd *abfd)
 
 static void
 wasm_reconstruct_section (bfd *abfd ATTRIBUTE_UNUSED,
-                          asection *asect ATTRIBUTE_UNUSED,
-                          void *fsarg ATTRIBUTE_UNUSED)
-{ }
+                          asection *asect,
+                          void *fsarg)
+{
+  bool *fine = (bool *)fsarg;
+  if (! wasm_section_data (asect)->type
+      || ! asect->contents || wasm_is_segment (asect))
+    return;
+
+  if (! wasm_nsec_section_reconstruct (asect))
+    *fine = false;
+}
 
 static bool
 wasm_reconstruct_sections (bfd *abfd)
@@ -533,7 +566,13 @@ wasm_new_section_hook (bfd *abfd, asection *newsect)
   wasm_section->type = bfd_wasm_section_name_to_code (newsect->name);
   wasm_section_link (abfd, newsect);
   wasm_register_section (abfd, newsect);
-  
+  if (! newsect->owner)
+    { /* *ABS*, *UND*, *COM*, *IND* */ }
+  else if (wasm_is_segment (newsect))
+    wasm_nsec_subsec_initialize (newsect);
+  else
+    wasm_nsec_section_initialize (newsect);
+
   /* We allow more than three sections internally.  */
   return _bfd_generic_new_section_hook (abfd, newsect);
 }
@@ -642,7 +681,7 @@ wasm_compute_section_file_positions (bfd *abfd)
       sec_ptr sec = wasmdata (abfd)->numbered_sections[i];
       bfd_size_type size;
 
-      if (! sec)
+      if (! sec || ! sec->contents)
 	continue;
       size = sec->size;
       if (bfd_seek (abfd, fs.pos, SEEK_SET) != 0)
@@ -714,7 +753,8 @@ wasm_write_object_contents (bfd* abfd)
   bfd_byte magic[] = WASM_MAGIC;
   bfd_byte vers[] = WASM_VERSION;
 
-  if (! wasm_flatten_sections (abfd))
+  if (! wasm_flatten_sections (abfd)
+      || ! wasm_nsec_symbols_adjust (abfd))
     {
       bfd_set_error (bfd_error_bad_value);
       return false;
@@ -751,6 +791,18 @@ wasm_mkobject (bfd *abfd)
 
   abfd->tdata.any = tdata;
   abfd->flags |= BFD_DEFER_CONTENTS; /* Backend flag, defer contents! */
+
+  /* Create empty sections for each numbered section (except custom). */
+  for (i = 1; i < WASM_NUMBERED_SECTIONS; ++i)
+    {
+      const char *name = wasm_numbered_sections[i];
+      if (!name)
+        continue;
+
+      asection *sec = bfd_make_section (abfd, name);
+      if (!sec)
+        return false;
+    }
 
   return true;
 }

@@ -31,6 +31,21 @@
 /* Numbered section amount */
 #define WASM_NUMBERED_SECTIONS 13
 
+/* Numbered sections */
+#define WASM_SEC_CUSTOM        0
+#define WASM_SEC_TYPE          1
+#define WASM_SEC_IMPORT        2
+#define WASM_SEC_FUNCTION      3
+#define WASM_SEC_TABLE         4
+#define WASM_SEC_MEMORY        5
+#define WASM_SEC_GLOBAL        6
+#define WASM_SEC_EXPORT        7
+#define WASM_SEC_START         8
+#define WASM_SEC_ELEMENT       9
+#define WASM_SEC_CODE          10
+#define WASM_SEC_DATA          11
+#define WASM_SEC_DATACOUNT     12
+
 /* Prefix to use to form section names.  */
 #define WASM_SECTION_PREFIX ".wasm."
 
@@ -110,9 +125,47 @@ typedef struct wasm_section_tdata
 #define wasm_section_type(sec) \
   (wasm_section_data(sec)->type)
 
+/* Function signature type */
+typedef struct wasm_type_sig
+{
+  size_t nparams;
+  size_t nresults;
+  uint8_t *params;
+  uint8_t *results;
+} wasm_type_sig;
+
+/* WebAssembly types */
+typedef struct wasm_ref_type
+{
+  /* No idea wtf this is */
+} wasm_reference_type;
+
+typedef struct wasm_limits_type
+{
+  unsigned int at, lim;
+} wasm_limits_type;
+
+typedef struct wasm_global_type
+{
+  unsigned int valtype;
+  bool mut;
+} wasm_global_type;
+
+typedef struct wasm_memory_type
+{
+  wasm_limits_type limits;
+} wasm_memory_type;
+
+typedef struct wasm_table_type
+{
+  wasm_reference_type ref;
+  wasm_limits_type limits;
+} wasm_table_type;
+
 /* Backend API */
 asection * bfd_wasm_get_section_by_number (bfd *abfd, int number);
 const char * bfd_wasm_section_code_to_name (bfd_byte section_code);
 unsigned int bfd_wasm_section_name_to_code (const char *name);
+asection * bfd_wasm_make_empty_segment (bfd *abfd, asection *parent);
 
 #endif /* _WASM_MODULE_H */

@@ -119,7 +119,7 @@ wasm_write_uleb128 (bfd *abfd, bfd_vma v)
 }
 
 unsigned int
-wasm_write_uleb128_buf (void *buf, bfd_vma v)
+wasm_write_uleb128_buf_min (void *buf, bfd_vma v, unsigned int min)
 {
   unsigned int count = 0;
   do
@@ -127,15 +127,27 @@ wasm_write_uleb128_buf (void *buf, bfd_vma v)
       bfd_byte c = v & 0x7f;
       v >>= 7;
 
-      if (v)
+      if (v || count + 1 < min)
         c |= 0x80;
 
       *((char*)buf++) = c;
       count++;
     }
-  while (v);
+  while (v || count < min);
 
   return count;
+}
+
+unsigned int
+wasm_write_uleb128_buf_pad (void *buf, bfd_vma v)
+{
+  return wasm_write_uleb128_buf_min (buf, v, WASM_ULEB128_PAD_LEN);
+}
+
+unsigned int
+wasm_write_uleb128_buf (void *buf, bfd_vma v)
+{
+  return wasm_write_uleb128_buf_min (buf, v, 1);
 }
 
 unsigned int
