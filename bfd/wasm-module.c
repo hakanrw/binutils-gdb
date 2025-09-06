@@ -1,7 +1,7 @@
 /* BFD back-end for WebAssembly modules.
    Copyright (C) 2017-2025 Free Software Foundation, Inc.
 
-   Based on srec.c, mmo.c, and binary.c
+   Based on srec.c, cofflink.c, mmo.c, and binary.c
 
    This file is part of BFD, the Binary File Descriptor library.
 
@@ -32,6 +32,7 @@
 
 #include "wasm-module.h"
 #include "wasm-common.h"
+#include "wasm-nsec.h"
 
 #include <limits.h>
 #ifndef CHAR_BIT
@@ -492,15 +493,23 @@ wasm_section_link (bfd *abfd, asection *asect)
 
 static void
 wasm_flatten_section (bfd *abfd ATTRIBUTE_UNUSED,
-                      asection *asect ATTRIBUTE_UNUSED,
-                      void *fsarg ATTRIBUTE_UNUSED)
-{ }
+                      asection *asect,
+                      void *fsarg)
+{
+  bool *fine = (bool *)fsarg;
+  if (! wasm_section_data (asect)->type || wasm_is_segment (asect))
+    return;
+
+  if (! wasm_nsec_section_flatten (asect))
+    *fine = false;
+}
 
 static bool
 wasm_flatten_sections (bfd *abfd)
 {
   bool fine = true;
   bfd_map_over_sections (abfd, wasm_flatten_section, &fine);
+  fine &= wasm_nsec_symbols_adjust (abfd);
   return fine;
 }
 
@@ -508,9 +517,17 @@ wasm_flatten_sections (bfd *abfd)
 
 static void
 wasm_reconstruct_section (bfd *abfd ATTRIBUTE_UNUSED,
-                          asection *asect ATTRIBUTE_UNUSED,
-                          void *fsarg ATTRIBUTE_UNUSED)
-{ }
+                          asection *asect,
+                          void *fsarg)
+{
+  bool *fine = (bool *)fsarg;
+  if (! wasm_section_data (asect)->type
+      || ! asect->contents || wasm_is_segment (asect))
+    return;
+
+  if (! wasm_nsec_section_reconstruct (asect))
+    *fine = false;
+}
 
 static bool
 wasm_reconstruct_sections (bfd *abfd)
@@ -524,8 +541,15 @@ wasm_reconstruct_sections (bfd *abfd)
 
 static void
 wasm_initialize_section (bfd *abfd ATTRIBUTE_UNUSED,
-			 asection *asect ATTRIBUTE_UNUSED)
-{ }
+			 asection *asect)
+{
+  if (! asect->owner)
+    { /* *ABS*, *UND*, *COM*, *IND* */ }
+  else if (wasm_is_segment (asect))
+    wasm_nsec_subsec_initialize (asect);
+  else
+    wasm_nsec_section_initialize (asect);
+}
 
 /* Put a numbered section ASECT of ABFD into the table of numbered
    sections pointed to by FSARG.  */
