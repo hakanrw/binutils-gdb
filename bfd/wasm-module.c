@@ -33,6 +33,7 @@
 #include "wasm-module.h"
 #include "wasm-common.h"
 #include "wasm-nsec.h"
+#include "wasm-linking.h"
 
 #include <limits.h>
 #ifndef CHAR_BIT
@@ -291,6 +292,41 @@ bfd_wasm_local_index_of (asection *segment)
   return wasm_section_data (segment)->index;
 }
 
+int
+bfd_wasm_symtype_to_sectype (unsigned int symtype)
+{
+  switch (symtype)
+    {
+    case WASM_SYMTAB_FUNCTION:
+      return WASM_SEC_CODE;
+    case WASM_SYMTAB_DATA:
+      return WASM_SEC_DATA;
+    case WASM_SYMTAB_GLOBAL:
+      return WASM_SEC_GLOBAL;
+   case WASM_SYMTAB_TABLE:
+      return WASM_SEC_TABLE;
+    default:
+      return -1;
+    }
+}
+
+int
+bfd_wasm_sectype_to_symtype (unsigned int sectype)
+{
+  switch (sectype)
+    {
+    case WASM_SEC_CODE:
+      return WASM_SYMTAB_FUNCTION;
+    case WASM_SEC_DATA:
+      return WASM_SYMTAB_DATA;
+    case WASM_SEC_GLOBAL:
+      return WASM_SYMTAB_GLOBAL;
+    case WASM_SEC_TABLE:
+      return WASM_SYMTAB_TABLE;
+    default:
+      return -1;
+    }  
+}
 
 /* Verify the magic number at the beginning of a WebAssembly module
    ABFD, setting ERRORPTR if there's a mismatch.  */
@@ -341,130 +377,6 @@ wasm_read_header (bfd *abfd, bool *errorptr)
     return false;
 
   return true;
-}
-
-/* Scan the "function" subsection of the "name" section ASECT in the
-   wasm module ABFD. Create symbols. Return TRUE on success.  */
-
-static bool
-wasm_scan_name_function_section (bfd *abfd, sec_ptr asect)
-{
-  bfd_byte *p;
-  bfd_byte *end;
-  bfd_vma payload_size;
-  bfd_vma symcount = 0;
-  wasm_tdata_type *tdata = wasmdata (abfd);
-  asymbol *symbols = NULL;
-  sec_ptr space_function_index;
-  size_t amt;
-
-  p = asect->contents;
-  end = asect->contents + asect->size;
-
-  if (!p)
-    return false;
-
-  while (p < end)
-    {
-      bfd_byte subsection_code = *p++;
-      if (subsection_code == WASM_FUNCTION_SUBSECTION)
-	break;
-
-      /* subsection_code is documented to be a varuint7, meaning that
-	 it has to be a single byte in the 0 - 127 range.  If it isn't,
-	 the spec must have changed underneath us, so give up.  */
-      if (subsection_code & 0x80)
-	return false;
-
-      READ_LEB128 (payload_size, p, end);
-
-      if (payload_size > (size_t) (end - p))
-	return false;
-
-      p += payload_size;
-    }
-
-  if (p >= end)
-    return false;
-
-  READ_LEB128 (payload_size, p, end);
-
-  if (payload_size > (size_t) (end - p))
-    return false;
-
-  end = p + payload_size;
-
-  READ_LEB128 (symcount, p, end);
-
-  /* Sanity check: each symbol has at least two bytes.  */
-  if (symcount > payload_size / 2)
-    return false;
-
-  tdata->symcount = symcount;
-
-  space_function_index
-    = bfd_make_section_with_flags (abfd, WASM_SECTION_FUNCTION_INDEX,
-				   SEC_READONLY | SEC_CODE);
-
-  if (!space_function_index)
-    space_function_index
-      = bfd_get_section_by_name (abfd, WASM_SECTION_FUNCTION_INDEX);
-
-  if (!space_function_index)
-    return false;
-
-  if (_bfd_mul_overflow (tdata->symcount, sizeof (asymbol), &amt))
-    {
-      bfd_set_error (bfd_error_file_too_big);
-      return false;
-    }
-  symbols = bfd_alloc (abfd, amt);
-  if (!symbols)
-    return false;
-
-  for (symcount = 0; p < end && symcount < tdata->symcount; symcount++)
-    {
-      bfd_vma idx;
-      bfd_vma len;
-      char *name;
-      asymbol *sym;
-
-      READ_LEB128 (idx, p, end);
-      READ_LEB128 (len, p, end);
-
-      if (len > (size_t) (end - p))
-	goto error_return;
-
-      name = bfd_alloc (abfd, len + 1);
-      if (!name)
-	goto error_return;
-
-      memcpy (name, p, len);
-      name[len] = 0;
-      p += len;
-
-      sym = &symbols[symcount];
-      sym->the_bfd = abfd;
-      sym->name = name;
-      sym->value = idx;
-      sym->flags = BSF_GLOBAL | BSF_FUNCTION;
-      sym->section = space_function_index;
-      sym->udata.p = NULL;
-    }
-
-  if (symcount < tdata->symcount)
-    goto error_return;
-
-  tdata->symbols = symbols;
-  abfd->symcount = symcount;
-
-  return true;
-
- error_return:
-  if (symbols)
-    bfd_release (abfd, symbols);
-  tdata->symcount = 0;
-  return false;
 }
 
 /* Read a byte from ABFD and return it, or EOF for EOF or error.
@@ -945,6 +857,7 @@ wasm_write_object_contents (bfd* abfd)
       bfd_set_error (bfd_error_bad_value);
       return false;
     }
+  wasm_write_linking_section (abfd);
 
   if (! wasm_compute_section_file_positions (abfd))
     return false;
@@ -1012,7 +925,7 @@ wasm_canonicalize_symtab (bfd *abfd, asymbol **alocation)
   size_t i;
 
   for (i = 0; i < tdata->symcount; i++)
-    alocation[i] = &tdata->symbols[i];
+    alocation[i] = (asymbol *)&tdata->symbols[i];
   alocation[i] = NULL;
 
   return tdata->symcount;
@@ -1021,13 +934,13 @@ wasm_canonicalize_symtab (bfd *abfd, asymbol **alocation)
 static asymbol *
 wasm_make_empty_symbol (bfd *abfd)
 {
-  size_t amt = sizeof (asymbol);
-  asymbol *new_symbol = (asymbol *) bfd_zalloc (abfd, amt);
+  size_t amt = sizeof (wasm_symbol_type);
+  wasm_symbol_type *new_symbol = (wasm_symbol_type *) bfd_zalloc (abfd, amt);
 
   if (! new_symbol)
     return NULL;
-  new_symbol->the_bfd = abfd;
-  return new_symbol;
+  new_symbol->symbol.the_bfd = abfd;
+  return &new_symbol->symbol;
 }
 
 static void
@@ -1064,7 +977,6 @@ static bfd_cleanup
 wasm_object_p (bfd *abfd)
 {
   bool error;
-  asection *s;
 
   if (bfd_seek (abfd, 0, SEEK_SET) != 0)
     return NULL;
@@ -1086,16 +998,15 @@ wasm_object_p (bfd *abfd)
       return NULL;
     }
 
-  s = bfd_get_section_by_name (abfd, WASM_NAME_SECTION);
-  if (s != NULL && wasm_scan_name_function_section (abfd, s))
-    abfd->flags |= HAS_SYMS;
-
   if (! wasm_reconstruct_sections (abfd))
     {
       bfd_set_error (bfd_error_bad_value);
       return NULL;
     }
 
+  if (! wasm_read_linking_section (abfd))
+    return NULL;
+  
   return _bfd_no_cleanup;
 }
 

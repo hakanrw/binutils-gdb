@@ -75,9 +75,16 @@ typedef struct wasm_symbol_type
 
   /* Wasm symbol fields.  */
   unsigned int index;
-  unsigned int kind;
   unsigned int size;
 } wasm_symbol_type;
+
+/* Symbol types */
+#define WASM_SYMTAB_FUNCTION 0
+#define WASM_SYMTAB_DATA     1
+#define WASM_SYMTAB_GLOBAL   2
+#define WASM_SYMTAB_SECTION  3
+#define WASM_SYMTAB_EVENT    4
+#define WASM_SYMTAB_TABLE    5
 
 /* We take the address of the first element of an asymbol to ensure that the
    macro is only ever applied to an asymbol.  */
@@ -105,7 +112,7 @@ typedef struct wasm_section_tdata
 /* Backend specific data.  */
 typedef struct wasm_tdata_type
 {
-  asymbol * symbols;
+  wasm_symbol_type * symbols;
   bfd_size_type  symcount;
   asection * numbered_sections[WASM_NUMBERED_SECTIONS];
 } wasm_tdata_type;
@@ -124,6 +131,10 @@ typedef struct wasm_tdata_type
 /* Get the type of an asection or segment */
 #define wasm_section_type(sec) \
   (wasm_section_data(sec)->type)
+
+/* Get the type of a symbol.  */
+#define wasm_symbol_type(asymbol) \
+  (bfd_wasm_sectype_to_symtype (wasm_section_type (asymbol->section)))
 
 /* WebAssembly types.  */
 typedef struct wasm_type_sig
@@ -194,5 +205,9 @@ const char * bfd_wasm_get_import_name (asection *importsec);
 bool bfd_wasm_set_import_name (asection *importsec, const char *name);
 int bfd_wasm_get_import_type (asection *importsec);
 bool bfd_wasm_set_import_type (asection *importsec, int externtype);
+
+/* Symbol specific */
+int bfd_wasm_symtype_to_sectype (unsigned int symtype);
+int bfd_wasm_sectype_to_symtype (unsigned int sectype);
 
 #endif /* _WASM_MODULE_H */

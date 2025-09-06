@@ -391,6 +391,7 @@ BFD32_BACKENDS = \
 	wasm-module.lo \
 	wasm-common.lo \
 	wasm-nsec.lo \
+	wasm-linking.lo \
 	xcofflink.lo \
 	xsym.lo \
 	xtensa-dynconfig.lo \
@@ -525,6 +526,7 @@ BFD32_BACKENDS_CFILES = \
 	wasm-module.c \
 	wasm-common.c \
 	wasm-nsec.c \
+	wasm-linking.c \
 	xcofflink.c \
 	xsym.c \
 	xtensa-dynconfig.c \
@@ -722,7 +724,7 @@ SOURCE_HFILES = \
 	pef.h pef-traceback.h peicode.h plugin.h \
 	som.h sysdep.h \
 	version.h vms.h \
-	wasm-module.h wasm-common.h wasm-nsec.h \
+	wasm-module.h wasm-common.h wasm-nsec.h wasm-linking.h \
 	xcofflink.h xsym.h
 
 ## ... and .h files which are in the build tree, minus config.h and bfd.h
