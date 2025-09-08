@@ -19,7 +19,7 @@
    02110-1301, USA.  */
 
 #define TC_WASM32
-#define TARGET_FORMAT                       "elf32-wasm32"
+#define TARGET_FORMAT                               "wasm"
 #define TARGET_ARCH                        bfd_arch_wasm32
 #define TARGET_MACH                                      1
 

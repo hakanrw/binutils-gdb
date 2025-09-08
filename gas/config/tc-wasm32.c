@@ -167,7 +167,6 @@ md_begin (void)
     str_hash_insert (wasm32_hash, opcode->name, opcode, 0);
 
   linkrelax = 0;
-  flag_sectname_subst = 1;
   flag_no_comments = 0;
   flag_keep_locals = 1;
 }
