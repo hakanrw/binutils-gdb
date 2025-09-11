@@ -62,6 +62,17 @@ typedef struct wasm_symbol_type
    macro is only ever applied to an asymbol.  */
 #define wasmsymbol(asymbol) ((wasm_symbol_type *) (&((asymbol)->the_bfd)))
 
+/* Backend specific data */
+typedef struct wasm_tdata_type
+{
+  asymbol *      symbols;
+  bfd_size_type  symcount;
+  asection *     numbered_sections[WASM_NUMBERED_SECTIONS];
+} wasm_tdata_type;
+
+/* Macro to access backend data */
+#define wasmdata(abfd) ((wasm_tdata_type *) ((abfd)->tdata.any))
+
 /* Section specific data */
 typedef struct wasm_section_tdata
 {
@@ -77,5 +88,8 @@ typedef struct wasm_section_tdata
 /* An accessor macro for the ecoff_section_tdata structure.  */
 #define wasm_section_data(sec) \
   ((wasm_section_tdata *) (sec)->used_by_bfd)
+
+/* Backend API */
+asection * bfd_wasm_get_section_by_number (bfd *abfd, int number);
 
 #endif /* _WASM_MODULE_H */

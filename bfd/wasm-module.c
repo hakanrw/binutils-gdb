@@ -36,12 +36,6 @@
 #define CHAR_BIT 8
 #endif
 
-typedef struct
-{
-  asymbol *      symbols;
-  bfd_size_type  symcount;
-} tdata_type;
-
 static const char * const wasm_numbered_sections[] =
 {
   NULL, /* Custom section, different layout.  */
@@ -60,6 +54,15 @@ static const char * const wasm_numbered_sections[] =
 };
 
 #define WASM_NUMBERED_SECTIONS ARRAY_SIZE (wasm_numbered_sections)
+
+asection *
+bfd_wasm_get_section_by_number (bfd *abfd, int number)
+{
+  if (number <= 0 || number >= WASM_NUMBERED_SECTIONS)
+    return NULL;
+
+  return wasmdata (abfd)->numbered_sections[number];
+}
 
 /* Resolve SECTION_CODE to a section name if there is one, NULL
    otherwise.  */
@@ -250,7 +253,7 @@ wasm_scan_name_function_section (bfd *abfd, sec_ptr asect)
   bfd_byte *end;
   bfd_vma payload_size;
   bfd_vma symcount = 0;
-  tdata_type *tdata = abfd->tdata.any;
+  wasm_tdata_type *tdata = wasmdata (abfd);
   asymbol *symbols = NULL;
   sec_ptr space_function_index;
   size_t amt;
@@ -602,11 +605,10 @@ wasm_reconstruct_sections (bfd *abfd)
    sections pointed to by FSARG.  */
 
 static void
-wasm_register_section (bfd *abfd ATTRIBUTE_UNUSED,
-		       asection *asect,
-		       void *fsarg)
+wasm_register_section (bfd *abfd,
+		       asection *asect)
 {
-  sec_ptr *numbered_sections = fsarg;
+  sec_ptr *numbered_sections = wasmdata (abfd)->numbered_sections;
   int idx = wasm_section_name_to_code (asect->name);
 
   if (idx == 0)
@@ -630,7 +632,8 @@ wasm_new_section_hook (bfd *abfd, asection *newsect)
   wasm_section->section = newsect;
   wasm_section->type = wasm_section_name_to_code (newsect->name);
   wasm_section_link (abfd, newsect);
-
+  wasm_register_section (abfd, newsect);
+  
   /* We allow more than three sections internally.  */
   return _bfd_generic_new_section_hook (abfd, newsect);
 }
@@ -725,7 +728,6 @@ wasm_compute_section_file_positions (bfd *abfd)
 {
   bfd_byte magic[SIZEOF_WASM_MAGIC] = WASM_MAGIC;
   bfd_byte vers[SIZEOF_WASM_VERSION] = WASM_VERSION;
-  sec_ptr numbered_sections[WASM_NUMBERED_SECTIONS];
   struct compute_section_arg fs;
   unsigned int i;
 
@@ -734,15 +736,10 @@ wasm_compute_section_file_positions (bfd *abfd)
       || bfd_write (vers, sizeof (vers), abfd) != sizeof (vers))
     return false;
 
-  for (i = 0; i < WASM_NUMBERED_SECTIONS; i++)
-    numbered_sections[i] = NULL;
-
-  bfd_map_over_sections (abfd, wasm_register_section, numbered_sections);
-
   fs.pos = bfd_tell (abfd);
   for (i = 0; i < WASM_NUMBERED_SECTIONS; i++)
     {
-      sec_ptr sec = numbered_sections[i];
+      sec_ptr sec = wasmdata (abfd)->numbered_sections[i];
       bfd_size_type size;
 
       if (! sec)
@@ -841,13 +838,16 @@ wasm_write_object_contents (bfd* abfd)
 static bool
 wasm_mkobject (bfd *abfd)
 {
-  tdata_type *tdata = (tdata_type *) bfd_alloc (abfd, sizeof (tdata_type));
+  wasm_tdata_type *tdata = (wasm_tdata_type *) bfd_alloc (abfd, sizeof (wasm_tdata_type));
+  size_t i;
 
   if (! tdata)
     return false;
 
   tdata->symbols = NULL;
   tdata->symcount = 0;
+  for (i = 0; i < WASM_NUMBERED_SECTIONS; i++)
+    tdata->numbered_sections[i] = NULL;
 
   abfd->tdata.any = tdata;
   abfd->flags |= BFD_DEFER_CONTENTS; /* Backend flag, defer contents! */
@@ -858,7 +858,7 @@ wasm_mkobject (bfd *abfd)
 static long
 wasm_get_symtab_upper_bound (bfd *abfd)
 {
-  tdata_type *tdata = abfd->tdata.any;
+  wasm_tdata_type *tdata = wasmdata (abfd);
 
   return (tdata->symcount + 1) * (sizeof (asymbol *));
 }
@@ -866,7 +866,7 @@ wasm_get_symtab_upper_bound (bfd *abfd)
 static long
 wasm_canonicalize_symtab (bfd *abfd, asymbol **alocation)
 {
-  tdata_type *tdata = abfd->tdata.any;
+  wasm_tdata_type *tdata = wasmdata (abfd);
   size_t i;
 
   for (i = 0; i < tdata->symcount; i++)
