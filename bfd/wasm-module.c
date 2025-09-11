@@ -29,7 +29,9 @@
 #include "bfd.h"
 #include "libiberty.h"
 #include "libbfd.h"
+
 #include "wasm-module.h"
+#include "wasm-common.h"
 
 #include <limits.h>
 #ifndef CHAR_BIT
@@ -53,8 +55,6 @@ static const char * const wasm_numbered_sections[] =
   WASM_SECTION (12, "datacount"),
 };
 
-#define WASM_NUMBERED_SECTIONS ARRAY_SIZE (wasm_numbered_sections)
-
 asection *
 bfd_wasm_get_section_by_number (bfd *abfd, int number)
 {
@@ -67,8 +67,8 @@ bfd_wasm_get_section_by_number (bfd *abfd, int number)
 /* Resolve SECTION_CODE to a section name if there is one, NULL
    otherwise.  */
 
-static const char *
-wasm_section_code_to_name (bfd_byte section_code)
+const char *
+bfd_wasm_section_code_to_name (bfd_byte section_code)
 {
   if (section_code < WASM_NUMBERED_SECTIONS)
     return wasm_numbered_sections[section_code];
@@ -79,8 +79,8 @@ wasm_section_code_to_name (bfd_byte section_code)
 /* Translate section name NAME to a section code, or 0 if it's a
    custom name.  */
 
-static unsigned int
-wasm_section_name_to_code (const char *name)
+unsigned int
+bfd_wasm_section_name_to_code (const char *name)
 {
   unsigned i;
 
@@ -90,107 +90,6 @@ wasm_section_name_to_code (const char *name)
 
   return 0;
 }
-
-/* WebAssembly LEB128 integers are sufficiently like DWARF LEB128
-   integers that we use _bfd_safe_read_leb128, but there are two
-   points of difference:
-
-   - WebAssembly requires a 32-bit value to be encoded in at most 5
-     bytes, etc.
-   - _bfd_safe_read_leb128 accepts incomplete LEB128 encodings at the
-     end of the buffer, while these are invalid in WebAssembly.
-
-   Those differences mean that we will accept some files that are
-   invalid WebAssembly.  */
-
-/* Read an LEB128-encoded integer from ABFD's I/O stream, reading one
-   byte at a time.  Set ERROR_RETURN if no complete integer could be
-   read, LENGTH_RETURN to the number of bytes read (including bytes in
-   incomplete numbers).  SIGN means interpret the number as SLEB128. */
-
-static bfd_vma
-wasm_read_leb128 (bfd *abfd,
-		  bool *error_return,
-		  unsigned int *length_return,
-		  bool sign)
-{
-  bfd_vma result = 0;
-  unsigned int num_read = 0;
-  unsigned int shift = 0;
-  unsigned char byte = 0;
-  unsigned char lost, mask;
-  int status = 1;
-
-  while (bfd_read (&byte, 1, abfd) == 1)
-    {
-      num_read++;
-
-      if (shift < CHAR_BIT * sizeof (result))
-	{
-	  result |= ((bfd_vma) (byte & 0x7f)) << shift;
-	  /* These bits overflowed.  */
-	  lost = byte ^ (result >> shift);
-	  /* And this is the mask of possible overflow bits.  */
-	  mask = 0x7f ^ ((bfd_vma) 0x7f << shift >> shift);
-	  shift += 7;
-	}
-      else
-	{
-	  lost = byte;
-	  mask = 0x7f;
-	}
-      if ((lost & mask) != (sign && (bfd_signed_vma) result < 0 ? mask : 0))
-	status |= 2;
-
-      if ((byte & 0x80) == 0)
-	{
-	  status &= ~1;
-	  if (sign && shift < CHAR_BIT * sizeof (result) && (byte & 0x40))
-	    result |= -((bfd_vma) 1 << shift);
-	  break;
-	}
-    }
-
-  if (length_return != NULL)
-    *length_return = num_read;
-  if (error_return != NULL)
-    *error_return = status != 0;
-
-  return result;
-}
-
-/* Encode an integer V as LEB128 and write it to ABFD, return TRUE on
-   success.  */
-
-static bool
-wasm_write_uleb128 (bfd *abfd, bfd_vma v)
-{
-  do
-    {
-      bfd_byte c = v & 0x7f;
-      v >>= 7;
-
-      if (v)
-	c |= 0x80;
-
-      if (bfd_write (&c, 1, abfd) != 1)
-	return false;
-    }
-  while (v);
-
-  return true;
-}
-
-/* Read the LEB128 integer at P, saving it to X; at end of buffer,
-   jump to error_return.  */
-#define READ_LEB128(x, p, end)						\
-  do									\
-    {									\
-      if ((p) >= (end))							\
-	goto error_return;						\
-      (x) = _bfd_safe_read_leb128 (abfd, &(p), false, (end));		\
-    }									\
-  while (0)
 
 /* Verify the magic number at the beginning of a WebAssembly module
    ABFD, setting ERRORPTR if there's a mismatch.  */
@@ -409,7 +308,7 @@ wasm_scan (bfd *abfd)
     {
       if (section_code != 0)
 	{
-	  const char *sname = wasm_section_code_to_name (section_code);
+	  const char *sname = bfd_wasm_section_code_to_name (section_code);
 
 	  if (!sname)
 	    goto error_return;
@@ -527,6 +426,7 @@ wasm_section_set_child (asection *parent, asection *child)
   wasm_section_tdata *child_sdata = wasm_section_data (child);
 
   child_sdata->parent = parent_sdata;
+  child_sdata->type = parent_sdata->type
 
   if (! parent_sdata->children_tail)
     {
@@ -609,7 +509,7 @@ wasm_register_section (bfd *abfd,
 		       asection *asect)
 {
   sec_ptr *numbered_sections = wasmdata (abfd)->numbered_sections;
-  int idx = wasm_section_name_to_code (asect->name);
+  int idx = bfd_wasm_section_name_to_code (asect->name);
 
   if (idx == 0)
     return;
@@ -630,7 +530,7 @@ wasm_new_section_hook (bfd *abfd, asection *newsect)
     return false;
   
   wasm_section->section = newsect;
-  wasm_section->type = wasm_section_name_to_code (newsect->name);
+  wasm_section->type = bfd_wasm_section_name_to_code (newsect->name);
   wasm_section_link (abfd, newsect);
   wasm_register_section (abfd, newsect);
   
@@ -665,7 +565,7 @@ wasm_compute_custom_section_file_position (bfd *abfd,
   if (fs->failed)
     return;
 
-  idx = wasm_section_name_to_code (asect->name);
+  idx = bfd_wasm_section_name_to_code (asect->name);
 
   if (idx != 0)
     return;

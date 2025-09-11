@@ -28,6 +28,9 @@
 #define SIZEOF_WASM_VERSION  4
 #define WASM_VERSION	     { 0x01, 0x00, 0x00, 0x00 }
 
+/* Numbered section amount */
+#define WASM_NUMBERED_SECTIONS 13
+
 /* Prefix to use to form section names.  */
 #define WASM_SECTION_PREFIX ".wasm."
 
@@ -49,6 +52,7 @@
 /* The section to report wasm symbols in.  */
 #define WASM_SECTION_FUNCTION_INDEX ".space.function_index"
 
+/* Backend types */
 typedef struct wasm_symbol_type
 {
   /* The actual symbol which the rest of BFD works with.  */
@@ -56,6 +60,8 @@ typedef struct wasm_symbol_type
 
   /* Wasm symbol fields.  */
   unsigned int index;
+  unsigned int kind;
+  unsigned int size;
 } wasm_symbol_type;
 
 /* We take the address of the first element of an asymbol to ensure that the
@@ -83,13 +89,30 @@ typedef struct wasm_section_tdata
   struct wasm_section_tdata *  children_tail;
   bfd_size_type subsec_count;
   unsigned int offset;
+  unsigned int index;
+  unsigned int type;
+  void * meta;
 } wasm_section_tdata;
 
 /* An accessor macro for the ecoff_section_tdata structure.  */
 #define wasm_section_data(sec) \
   ((wasm_section_tdata *) (sec)->used_by_bfd)
 
+/* Check if an asection is a parent (section) */
+#define wasm_is_parent(sec) \
+  (wasm_section_data(sec)->parent == NULL)
+
+/* Check if an asection is a segment (subsection) */
+#define wasm_is_segment(sec) \
+  (wasm_section_data(sec)->parent != NULL)
+
+/* Get the type of an asection or segment */
+#define wasm_section_type(sec) \
+  (wasm_section_data(sec)->type)
+
 /* Backend API */
 asection * bfd_wasm_get_section_by_number (bfd *abfd, int number);
+const char * bfd_wasm_section_code_to_name (bfd_byte section_code);
+unsigned int bfd_wasm_section_name_to_code (const char *name);
 
 #endif /* _WASM_MODULE_H */
