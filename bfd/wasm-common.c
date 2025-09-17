@@ -27,6 +27,7 @@
 
 #include "sysdep.h"
 #include "wasm-common.h"
+#include <string.h>
 
 /* WebAssembly LEB128 integers are sufficiently like DWARF LEB128
    integers that we use _bfd_safe_read_leb128, but there are two
@@ -44,6 +45,25 @@
    byte at a time.  Set ERROR_RETURN if no complete integer could be
    read, LENGTH_RETURN to the number of bytes read (including bytes in
    incomplete numbers).  SIGN means interpret the number as SLEB128. */
+
+#define ADVANCE(x) \
+  do						\
+    {						\
+      unsigned int tmp = x;			\
+      if (tmp == 0) return 0;			\
+      else cursor += tmp;			\
+    } while (0);
+
+#define ENSURE(x) \
+  do							\
+    {							\
+      unsigned int tmp = x;				\
+      if ((uintptr_t)limit - (uintptr_t)cursor <= tmp)	\
+	return 0;					\
+    } while (0);
+
+#define OFFSET() \
+  return (uintptr_t)cursor - (uintptr_t)start;
 
 bfd_vma
 wasm_read_leb128 (bfd *abfd,
@@ -208,4 +228,117 @@ wasm_estimate_digit (unsigned int num)
     digit++;
 
   return digit;
+}
+
+
+unsigned int
+wasm_write_name (void *buf, const char *name)
+{
+  bfd_byte *cursor = (bfd_byte *)buf;
+  bfd_vma len = strlen (name);
+  ADVANCE (wasm_write_uleb128_buf (cursor, len));
+  memcpy (cursor, name, len);
+  cursor += len;
+  return OFFSET ();
+}
+
+unsigned int
+wasm_read_name (void *start, void *limit /* exclusive */,
+		char *name)
+{
+  bfd_byte *cursor = (bfd_byte *)start;
+  bfd_vma len;
+  ADVANCE (wasm_read_uleb128_buf (cursor, limit, &len));
+  ENSURE (len);
+  memcpy (name, cursor, len);
+  name[len] = 0;
+  cursor += len;
+  return OFFSET ();
+}
+
+unsigned int
+wasm_sizeof_name (const char *name)
+{
+  bfd_vma len = strlen (name);
+  return wasm_sizeof_uleb128 (len) + len;
+}
+
+
+unsigned int
+wasm_write_limits_type (void *buf ATTRIBUTE_UNUSED, wasm_limits_type limits ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+unsigned int
+wasm_read_limits_type (void *start ATTRIBUTE_UNUSED, void *limit ATTRIBUTE_UNUSED /* exclusive */,
+		       wasm_limits_type *limits ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+unsigned int
+wasm_sizeof_limits_type (wasm_limits_type limits ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+
+unsigned int
+wasm_write_global_type (void *buf ATTRIBUTE_UNUSED, wasm_global_type global ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+unsigned int
+wasm_read_global_type (void *start ATTRIBUTE_UNUSED, void *limit ATTRIBUTE_UNUSED /* exclusive */,
+		       wasm_global_type *global ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+unsigned int
+wasm_sizeof_global_type (wasm_global_type global ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+
+unsigned int
+wasm_write_memory_type (void *buf ATTRIBUTE_UNUSED, wasm_memory_type limits ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+unsigned int
+wasm_read_memory_type (void *start ATTRIBUTE_UNUSED, void *limit ATTRIBUTE_UNUSED/* exclusive */,
+		       wasm_memory_type *memory ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+unsigned int
+wasm_sizeof_memory_type (wasm_memory_type memory ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+
+unsigned int
+wasm_write_table_type (void *buf ATTRIBUTE_UNUSED, wasm_table_type table ATTRIBUTE_UNUSED)
+{
+  return 0;
+}
+
+unsigned int
+wasm_read_table_type (void *start ATTRIBUTE_UNUSED, void *limit ATTRIBUTE_UNUSED /* exclusive */,
+		      wasm_table_type *table ATTRIBUTE_UNUSED)
+{
+  return 0;  
+}
+
+unsigned int
+wasm_sizeof_table_type (wasm_table_type table ATTRIBUTE_UNUSED)
+{
+  return 0;
 }

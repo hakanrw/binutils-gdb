@@ -64,12 +64,15 @@ typedef struct wasm_code_segment_meta
 
 /* -------------------- Import section -------------------- */
 
-typedef union wasm_extern_type
+typedef struct wasm_extern_type
 {
-  wasm_type_segment_meta *type_segment;
-  wasm_table_type table_type;
-  wasm_memory_type memory_type;
-  wasm_global_type global_type;
+  union {
+    wasm_type_segment_meta *type_segment;
+    wasm_table_type table_type;
+    wasm_memory_type memory_type;
+    wasm_global_type global_type;    
+  } e;
+  int kind;
 } wasm_extern_type;
 
 typedef struct wasm_import_section_meta { } wasm_import_section_meta;
@@ -77,7 +80,6 @@ typedef struct wasm_import_section_meta { } wasm_import_section_meta;
 typedef struct wasm_import_segment_meta
 {
   const char *import_name;
-  uint8_t kind;                       /* function = 0x00, table = 0x01, etc. */
   wasm_extern_type ext;               /* external import meta, dependant on kind */
 } wasm_import_segment_meta;
 

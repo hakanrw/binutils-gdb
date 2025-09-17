@@ -22,6 +22,7 @@
 #define _WASM_COMMON_H
 
 #include "bfd.h"
+#include "wasm-module.h"
 #include <limits.h>
 
 /* ULEB128 helpers */
@@ -59,5 +60,46 @@ unsigned int wasm_read_uleb128_buf (void *start, void *limit /* exclusive */,
                                     bfd_vma *v);
 
 size_t wasm_estimate_digit (unsigned int num);
+
+
+unsigned int wasm_write_name (void *buf, const char *name);
+
+unsigned int wasm_read_name (void *start, void *limit /* exclusive */,
+			     char *name);
+
+unsigned int wasm_sizeof_name (const char *name);
+
+
+unsigned int wasm_write_limits_type (void *buf, wasm_limits_type limits);
+
+unsigned int wasm_read_limits_type (void *start, void *limit /* exclusive */,
+				    wasm_limits_type *limits);
+
+unsigned int wasm_sizeof_limits_type (wasm_limits_type limits);
+
+
+unsigned int wasm_write_global_type (void *buf, wasm_global_type global);
+
+unsigned int wasm_read_global_type (void *start, void *limit /* exclusive */,
+				    wasm_global_type *global);
+
+unsigned int wasm_sizeof_global_type (wasm_global_type global);
+
+
+unsigned int wasm_write_memory_type (void *buf, wasm_memory_type limits);
+
+unsigned int wasm_read_memory_type (void *start, void *limit /* exclusive */,
+				    wasm_memory_type *memory);
+
+unsigned int wasm_sizeof_memory_type (wasm_memory_type memory);
+
+
+unsigned int wasm_write_table_type (void *buf, wasm_table_type table);
+
+unsigned int wasm_read_table_type (void *start, void *limit /* exclusive */,
+				    wasm_table_type *table);
+
+unsigned int wasm_sizeof_table_type (wasm_table_type table);
+
 
 #endif /* _WASM_COMMON_H */
