@@ -58,12 +58,12 @@
   do							\
     {							\
       unsigned int tmp = x;				\
-      if ((uintptr_t)limit - (uintptr_t)cursor <= tmp)	\
+      if ((uintptr_t)limit - (uintptr_t)cursor < tmp)	\
 	return 0;					\
     } while (0);
 
 #define OFFSET() \
-  return (uintptr_t)cursor - (uintptr_t)start;
+  (uintptr_t)cursor - (uintptr_t)start;
 
 bfd_vma
 wasm_read_leb128 (bfd *abfd,
@@ -165,9 +165,9 @@ wasm_write_uleb128_buf_pad (void *buf, bfd_vma v)
 }
 
 unsigned int
-wasm_write_uleb128_buf (void *buf, bfd_vma v)
+wasm_write_uleb128_buf (void *start, bfd_vma v)
 {
-  return wasm_write_uleb128_buf_min (buf, v, 1);
+  return wasm_write_uleb128_buf_min (start, v, 1);
 }
 
 unsigned int
@@ -232,9 +232,9 @@ wasm_estimate_digit (unsigned int num)
 
 
 unsigned int
-wasm_write_name (void *buf, const char *name)
+wasm_write_name (void *start, const char *name)
 {
-  bfd_byte *cursor = (bfd_byte *)buf;
+  bfd_byte *cursor = (bfd_byte *)start;
   bfd_vma len = strlen (name);
   ADVANCE (wasm_write_uleb128_buf (cursor, len));
   memcpy (cursor, name, len);
@@ -254,6 +254,13 @@ wasm_read_name (void *start, void *limit /* exclusive */,
   name[len] = 0;
   cursor += len;
   return OFFSET ();
+}
+
+unsigned int
+wasm_read_name_len (void *start, void *limit /* exclusive */,
+		    bfd_vma *len)
+{
+  return wasm_read_uleb128_buf (start, limit, len);
 }
 
 unsigned int

@@ -117,6 +117,181 @@ bfd_wasm_make_empty_segment (bfd *abfd, asection *parent)
   return segsec;
 }
 
+int
+bfd_wasm_externtype_to_sectype (unsigned int externtype)
+{
+  switch (externtype)
+    {
+    case WASM_EXTERN_FUNCTION:
+      return WASM_SEC_FUNCTION;
+    case WASM_EXTERN_TABLE:
+      return WASM_SEC_TABLE;
+    case WASM_EXTERN_MEMORY:
+      return WASM_SEC_MEMORY;
+    case WASM_EXTERN_GLOBAL:
+      return WASM_SEC_GLOBAL;
+    default:
+      return -1;
+    }
+}
+
+int
+bfd_wasm_sectype_to_externtype (unsigned int sectype)
+{
+  switch (sectype)
+    {
+    case WASM_SEC_FUNCTION:
+      return WASM_EXTERN_FUNCTION;
+    case WASM_SEC_TABLE:
+      return WASM_EXTERN_TABLE;
+    case WASM_SEC_MEMORY:
+      return WASM_EXTERN_MEMORY;
+    case WASM_SEC_GLOBAL:
+      return WASM_EXTERN_GLOBAL;
+    default:
+      return -1;
+    }  
+}
+
+asection *
+bfd_wasm_make_import_segment (bfd *abfd, const char *modname,
+			      const char *name, int externtype)
+{
+  asection *importsec = bfd_wasm_get_section_by_number (abfd, WASM_SEC_IMPORT);
+  asection *segsec = bfd_wasm_make_empty_segment (abfd, importsec);
+  wasm_import_segment_meta *meta = wasm_section_data (segsec)->meta;
+  meta->import_module = modname;
+  meta->import_name = name;
+  meta->ext.kind = externtype;
+  return segsec;
+}
+
+const char *
+bfd_wasm_get_import_modname (asection *importsec)
+{
+  wasm_import_segment_meta *meta = wasm_section_data (importsec)->meta;
+  return meta->import_module;
+}
+
+bool
+bfd_wasm_set_import_modname (asection *importsec, const char *name)
+{
+  wasm_import_segment_meta *meta = wasm_section_data (importsec)->meta;
+  meta->import_module = name;
+  return true;
+}
+
+const char *
+bfd_wasm_get_import_name (asection *importsec)
+{
+  wasm_import_segment_meta *meta = wasm_section_data (importsec)->meta;
+  return meta->import_name;
+}
+
+bool
+bfd_wasm_set_import_name (asection *importsec, const char *name)
+{
+  wasm_import_segment_meta *meta = wasm_section_data (importsec)->meta;
+  meta->import_name = name;
+  return true;
+}
+
+int
+bfd_wasm_get_import_type (asection *importsec)
+{
+  wasm_import_segment_meta *meta = wasm_section_data (importsec)->meta;
+  return meta->ext.kind;
+}
+
+bool
+bfd_wasm_set_import_type (asection *importsec, int externtype)
+{
+  wasm_import_segment_meta *meta = wasm_section_data (importsec)->meta;
+  meta->ext.kind = externtype;
+  return true;
+}
+
+asection *
+bfd_wasm_get_segment_by_index (bfd *abfd, int sectype, int idx)
+{
+  /* FIXME: optimize */
+  asection *importsec = bfd_wasm_get_section_by_number (abfd, WASM_SEC_IMPORT);
+  asection *objsec = bfd_wasm_get_section_by_number (abfd, sectype);
+  int externtype = bfd_wasm_sectype_to_externtype (sectype);
+  int objimports = 0;
+  int objidx = 0;
+  wasm_section_tdata *imcurr, *objcurr;
+  imcurr = wasm_section_data (importsec)->children_head;
+  objcurr = wasm_section_data (objsec)->children_head;
+
+  for (; imcurr && externtype != -1; imcurr = imcurr->sibling_next)
+    {
+      wasm_import_segment_meta *imeta = imcurr->meta;
+      if (objimports == idx)
+	return imcurr->section;
+      if (imeta->ext.kind == externtype)
+	objimports++;
+    }
+
+  for (; objcurr; objcurr = objcurr->sibling_next)
+    {
+      if (objimports + objidx == idx)
+	return objcurr->section;
+      objidx++;
+    }
+
+  return NULL;
+}
+
+asection *
+bfd_wasm_get_segment_by_local_index (bfd *abfd, int objtype, int idx)
+{
+  /* FIXME: optimize */
+  asection *objsec = bfd_wasm_get_section_by_number (abfd, objtype);
+  int objidx = 0;
+  wasm_section_tdata *objcurr = wasm_section_data (objsec)->children_head;
+
+  for (; objcurr; objcurr = objcurr->sibling_next)
+    {
+      if (objidx == idx)
+	return objcurr->section;
+      objidx++;
+    }
+
+  return NULL;
+}
+
+int
+bfd_wasm_index_of (asection *segment)
+{
+  /* FIXME: optimize */
+  bfd *abfd = segment->owner;
+  asection *importsec = bfd_wasm_get_section_by_number (abfd, WASM_SEC_IMPORT);
+  wasm_section_tdata *imdata = wasm_section_data (segment);
+  int externtype = bfd_wasm_sectype_to_externtype (imdata->parent->type);
+  int objimports = 0;
+  wasm_section_tdata *imcurr;
+  imcurr = wasm_section_data (importsec)->children_head;
+
+  for (; imcurr; imcurr = imcurr->sibling_next)
+    {
+      wasm_import_segment_meta *imeta = imcurr->meta;
+      if (imcurr->section == segment)
+	return objimports;
+      if (imeta->ext.kind == externtype)
+	objimports++;
+    }
+
+  return objimports + wasm_section_data (segment)->index;
+}
+
+int
+bfd_wasm_local_index_of (asection *segment)
+{
+  return wasm_section_data (segment)->index;
+}
+
+
 /* Verify the magic number at the beginning of a WebAssembly module
    ABFD, setting ERRORPTR if there's a mismatch.  */
 
@@ -450,7 +625,7 @@ wasm_section_set_child (asection *parent, asection *child)
   wasm_section_tdata *child_sdata = wasm_section_data (child);
 
   child_sdata->parent = parent_sdata;
-  child_sdata->type = parent_sdata->type
+  child_sdata->type = parent_sdata->type;
 
   if (! parent_sdata->children_tail)
     {

@@ -67,6 +67,9 @@ unsigned int wasm_write_name (void *buf, const char *name);
 unsigned int wasm_read_name (void *start, void *limit /* exclusive */,
 			     char *name);
 
+unsigned int wasm_read_name_len (void *start, void *limit /* exclusive */,
+				 bfd_vma *len);
+
 unsigned int wasm_sizeof_name (const char *name);
 
 

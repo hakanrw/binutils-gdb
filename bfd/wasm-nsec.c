@@ -108,6 +108,39 @@ struct wasm_segment_meta_ops
     return true;                                                       \
   }
 
+#define ADVANCE(x) \
+  do						\
+    {						\
+      unsigned int tmp = x;			\
+      BFD_ASSERT (tmp > 0);			\
+      if (tmp == 0) return -1;			\
+      else cursor += tmp;			\
+    } while (0);
+
+#define CHECK(x) \
+  do							\
+    {							\
+      unsigned int tmp = x;				\
+      BFD_ASSERT (tmp > 0);				\
+      if (tmp == 0)					\
+	return -1;					\
+    } while (0);
+
+#define ENSURE(x) \
+  do							\
+    {							\
+      unsigned int tmp = x;				\
+      if ((uintptr_t)end - (uintptr_t)cursor < tmp)	\
+	{						\
+	  BFD_FAIL ();					\
+	  return -1;					\
+	}						\
+    } while (0);
+
+#define OFFSET() \
+  (uintptr_t)cursor - (uintptr_t)start;
+
+
 /* ---------------------- Segments ---------------------- */
 
 static int
@@ -128,22 +161,136 @@ wasm_nsec_subsec_type_meta_len (asection *sec ATTRIBUTE_UNUSED)
   return 0;
 }
 
-static int
-wasm_nsec_subsec_import_parse_meta (asection *sec ATTRIBUTE_UNUSED, bfd_byte *start ATTRIBUTE_UNUSED, bfd_byte *end ATTRIBUTE_UNUSED)
+static unsigned int
+wasm_nsec_externtype_parse (bfd *abfd, bfd_byte *start, bfd_byte *end, wasm_extern_type *externtype)
 {
-  return 0;
+  bfd_byte *cursor = start;
+  ENSURE (1);
+  externtype->kind = *cursor;
+
+  switch (externtype->kind)
+    {
+    case 0: /* func */
+      asection *type_seg;
+      bfd_vma idx;
+      ADVANCE (wasm_read_uleb128_buf (cursor, end, &idx));
+      type_seg = bfd_wasm_get_segment_by_local_index (abfd, WASM_SEC_TYPE, idx);
+      BFD_ASSERT (type_seg);
+      break;
+    case 1: /* table */
+      ADVANCE (wasm_read_table_type (cursor, end, &externtype->e.table_type));
+      break;
+    case 2: /* mem */
+      ADVANCE (wasm_read_memory_type (cursor, end, &externtype->e.memory_type));
+      break;
+    case 3: /* global */
+      ADVANCE (wasm_read_global_type (cursor, end, &externtype->e.global_type));
+      break;
+    default:
+      BFD_FAIL ();
+      return -1;
+    }
+  
+  return OFFSET ();
+}
+
+static unsigned int
+wasm_nsec_externtype_serialize (bfd_byte *start ATTRIBUTE_UNUSED, wasm_extern_type *externtype ATTRIBUTE_UNUSED)
+{
+  bfd_byte *cursor = start;
+  
+  switch (externtype->kind)
+    {
+    case 0: /* func */
+      bfd_vma idx = 0; /* FIXME */
+      ADVANCE (wasm_write_uleb128_buf (cursor, idx));
+      break;
+    case 1: /* table */
+      ADVANCE (wasm_write_table_type (cursor, externtype->e.table_type));
+      break;
+    case 2: /* mem */
+      ADVANCE (wasm_write_memory_type (cursor, externtype->e.memory_type));
+      break;
+    case 3: /* global */
+      ADVANCE (wasm_write_global_type (cursor, externtype->e.global_type));
+      break;
+    default:
+      BFD_FAIL ();
+      return -1;
+    }
+  
+  return OFFSET ();
+
+}
+
+static unsigned int
+wasm_nsec_externtype_len (wasm_extern_type *externtype ATTRIBUTE_UNUSED)
+{
+  unsigned int len = 0;
+  switch (externtype->kind)
+    {
+    case 0: /* func */
+      len += wasm_sizeof_uleb128 (0); /* FIXME */
+      break;
+    case 1: /* table */
+      len += wasm_sizeof_table_type (externtype->e.table_type);
+      break;
+    case 2: /* mem */
+      len += wasm_sizeof_memory_type (externtype->e.memory_type);
+      break;
+    case 3: /* global */
+      len += wasm_sizeof_global_type (externtype->e.global_type);
+      break;
+    default:
+      BFD_FAIL ();
+      return -1;
+    }
+  
+  return len;
 }
 
 static int
-wasm_nsec_subsec_import_serialize_meta (asection *sec ATTRIBUTE_UNUSED, bfd_byte *start ATTRIBUTE_UNUSED)
+wasm_nsec_subsec_import_parse_meta (asection *sec, bfd_byte *start, bfd_byte *end)
 {
-  return 0;
+  wasm_import_segment_meta *meta =
+    (wasm_import_segment_meta *)wasm_section_data (sec)->meta;
+  bfd_byte *cursor = start;
+  bfd_vma module_len, name_len;
+  char *module, *name;
+  CHECK (wasm_read_name_len (cursor, end, &module_len));
+  module = bfd_alloc (sec->owner, module_len + 1);
+  ADVANCE (wasm_read_name (cursor, end, module));
+  meta->import_module = module;
+  CHECK (wasm_read_name_len (cursor, end, &name_len));
+  name = bfd_alloc (sec->owner, name_len + 1);
+  ADVANCE (wasm_read_name (cursor, end, name));
+  meta->import_name = name;
+  ADVANCE (wasm_nsec_externtype_parse (sec->owner, cursor, end, &meta->ext));
+  return OFFSET ();
 }
 
 static int
-wasm_nsec_subsec_import_meta_len (asection *sec ATTRIBUTE_UNUSED)
+wasm_nsec_subsec_import_serialize_meta (asection *sec, bfd_byte *start)
 {
-  return 0;
+  wasm_import_segment_meta *meta =
+    (wasm_import_segment_meta *)wasm_section_data (sec)->meta;
+  bfd_byte *cursor = start;
+  ADVANCE (wasm_write_name (cursor, meta->import_module));
+  ADVANCE (wasm_write_name (cursor, meta->import_name));
+  ADVANCE (wasm_nsec_externtype_serialize (cursor, &meta->ext));
+  return OFFSET ();
+}
+
+static int
+wasm_nsec_subsec_import_meta_len (asection *sec)
+{
+  wasm_import_segment_meta *meta =
+    (wasm_import_segment_meta *)wasm_section_data (sec)->meta;
+  int len = 0;
+  len += wasm_sizeof_name (meta->import_module);
+  len += wasm_sizeof_name (meta->import_name);
+  len += wasm_nsec_externtype_len (&meta->ext);
+  return len;
 }
 
 static int
@@ -709,15 +856,15 @@ wasm_nsec_symbols_adjust (bfd *abfd)
       sdata = wasm_section_data (currsym->section);
       if (wasm_is_segment (currsym->section))
 	{
+	  wasmsymbol (currsym)->index = bfd_wasm_index_of (currsym->section);
 	  currsym->section = sdata->parent->section;
-	  wasmsymbol (currsym)->index = sdata->index;
 	  if (sdata->parent->type == WASM_SEC_DATA)
 	    currsym->value += ((wasm_data_segment_meta *) sdata->meta)->address;
 	  else
 	    currsym->value += sdata->offset;
 	}
 
-      printf ("symbol %s at %s value %ld\n", currsym->name ? currsym->name : "<unknown>", currsym->section->name ? currsym->section->name : "<unknown>", currsym->value);
+      printf ("symbol %s at %s value %ld idx %d\n", currsym->name ? currsym->name : "<unknown>", currsym->section->name ? currsym->section->name : "<unknown>", currsym->value, wasmsymbol (currsym)->index);
     }
 
   return true;
