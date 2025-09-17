@@ -161,10 +161,38 @@ typedef struct wasm_table_type
   wasm_limits_type limits;
 } wasm_table_type;
 
-/* Backend API.  */
+/* External types.  */
+#define WASM_NUMBERED_EXTERNS 4
+#define WASM_EXTERN_FUNCTION  0
+#define WASM_EXTERN_TABLE     1
+#define WASM_EXTERN_MEMORY    2
+#define WASM_EXTERN_GLOBAL    3
+
+/* Check if an asection is an import. */
+#define wasm_is_import(sec) \
+  (wasm_is_segment(sec) \
+   && wasm_section_data(sec)->parent->type == WASM_SEC_IMPORT)
+
+/* Backend API. */
 asection * bfd_wasm_get_section_by_number (bfd *abfd, int number);
 const char * bfd_wasm_section_code_to_name (bfd_byte section_code);
 unsigned int bfd_wasm_section_name_to_code (const char *name);
 asection * bfd_wasm_make_empty_segment (bfd *abfd, asection *parent);
+asection * bfd_wasm_get_segment_by_index (bfd *abfd, int sectype, int idx);
+asection * bfd_wasm_get_segment_by_local_index (bfd *abfd, int sectype, int idx);
+int bfd_wasm_index_of (asection *segment);
+int bfd_wasm_local_index_of (asection *segment);
+
+/* Import specific.  */
+int bfd_wasm_externtype_to_sectype (unsigned int externtype);
+int bfd_wasm_sectype_to_externtype (unsigned int sectype);
+asection * bfd_wasm_make_import_segment (bfd *abfd, const char *modname,
+					 const char *name, int externtype);
+const char * bfd_wasm_get_import_modname (asection *importsec);
+bool bfd_wasm_set_import_modname (asection *importsec, const char *name);
+const char * bfd_wasm_get_import_name (asection *importsec);
+bool bfd_wasm_set_import_name (asection *importsec, const char *name);
+int bfd_wasm_get_import_type (asection *importsec);
+bool bfd_wasm_set_import_type (asection *importsec, int externtype);
 
 #endif /* _WASM_MODULE_H */

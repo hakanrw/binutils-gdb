@@ -79,6 +79,7 @@ typedef struct wasm_import_section_meta { } wasm_import_section_meta;
 
 typedef struct wasm_import_segment_meta
 {
+  const char *import_module;
   const char *import_name;
   wasm_extern_type ext;               /* external import meta, dependant on kind */
 } wasm_import_segment_meta;
